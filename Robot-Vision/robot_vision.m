@@ -68,13 +68,15 @@ try
         visualise = updateScan(visualise, cart);
 
         %% Visualise image
-        image = flip(image, 1); % Flip image vertically (upside down fix)
+        imageRGB = flip(image, 1); % Flip image vertically (upside down fix)
+        imageGray = rgb2gray(imageRGB);
         centersR = []; radiiR = []; % Initialisér som tomme
         centersB = []; radiiB = []; % Initialisér som tomme
         
         % --- A. PREPROCESSING (Robusthed fra slides) ---
             % Øger kontrasten for at håndtere dårligt lys
-            enhancedImage = imadjust(RGB, image);
+            lowHigh = stretchlim(imageRGB, [0.01 0.99]);
+            enhancedImage = imadjust(imageRGB, lowHigh, []);
 
             % Fjerner kamera-støj (Gaussian/Median-filter logik)
             smoothImage = imgaussfilt(enhancedImage, 1);
@@ -115,7 +117,7 @@ try
             end
         
         
-        visualise = updateImage(visualise, image);
+        visualise = updateImage(visualise, imageGray);
         figure(visualise.figImage);
         hold on;
             
