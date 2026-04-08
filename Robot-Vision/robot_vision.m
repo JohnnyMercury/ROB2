@@ -146,42 +146,36 @@ try
             end
             
             hold off;
-   
+
+        %% Exercise 2: Distance Estimation
+        H = 0.10; % Real circle size in meters (10 cm)
+        f = 1226.5;  % Camera focal length in pixels (calibrated)
+
+        if ~isempty(centersR)
+            distanceR = f * H / (2 * radiiR(1));
+            fprintf('Red circle distance: %.2f m\n', distanceR);
+        end
+
+        if ~isempty(centersB)
+            distanceB = f * H / (2 * radiiB(1));
+            fprintf('Blue circle distance: %.2f m\n', distanceB);
+        end
 
         %% PID controller for heading
         angularVelocity = 0.0;
 
         %% PID controller for position
         linearVelocity = 0.0;
-    
+
         %% Publish velocity commands
         cmdMsg = ros2message('geometry_msgs/Twist');
         cmdMsg.linear.x = clip(linearVelocity, -0.1, 0.1);
         cmdMsg.angular.z = clip(angularVelocity, -1.0, 1.0);
         % send(cmdPub, cmdMsg);
-    
+
         %% Pause to visualize and delete old plots
         pause(0.1)
-    
-        %% Exit the loop if the figure is closed
-        if size(findobj(visualise.figAvatar)) == 0 | size(findobj(visualise.figImage)) == 0
-            ME = MException('NonExeption:EndProgram', 'The program was closed.');
-            throw(ME)
-        end
 
-
-        angularVelocity = 0.0;
-        linearVelocity = 0.0;
-    
-        %% Publish velocity commands
-        cmdMsg = ros2message('geometry_msgs/Twist');
-        cmdMsg.linear.x = clip(linearVelocity, -0.1, 0.1);
-        cmdMsg.angular.z = clip(angularVelocity, -1.0, 1.0);
-        % send(cmdPub, cmdMsg);
-    
-        %% Pause to visualize and delete old plots
-        pause(0.1)
-    
         %% Exit the loop if the figure is closed
         if size(findobj(visualise.figAvatar)) == 0 | size(findobj(visualise.figImage)) == 0
             ME = MException('NonExeption:EndProgram', 'The program was closed.');
