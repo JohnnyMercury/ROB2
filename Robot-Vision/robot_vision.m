@@ -1,3 +1,9 @@
+%% Robot Vision: Object Detection & Distance Estimation (ROS2)
+% Exercise 1: Detects red and blue circles using HSV segmentation,
+%             morphological operations, and circular Hough transform.
+% Exercise 2: Estimates distance to detected circles using calibrated
+%             focal length (f = 1226.5 px) and known circle size (H = 10 cm).
+
 %% Clear workspace, command window, and close all figures
 clear all
 clc
