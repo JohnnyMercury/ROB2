@@ -86,7 +86,7 @@ try
         %% Exercise 1: Object Detection
         % --- A. PREPROCESSING ---
             % stretchlim finds the intensity range covering 98% of pixels,
-            % then imadjust stretches it to [0,1] — improves contrast
+            % then imadjust stretches it to [0,1] - improves contrast
             % under variable lighting conditions.
             lowHigh = stretchlim(imageRGB, [0.01 0.99]);
             enhancedImage = imadjust(imageRGB, lowHigh, []);
