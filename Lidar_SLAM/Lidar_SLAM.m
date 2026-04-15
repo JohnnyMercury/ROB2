@@ -44,8 +44,13 @@ maxLidarRange = 3.5;
 mapResolution = 20;
 
 slamObj = lidarSLAM(mapResolution, maxLidarRange);
-slamObj.LoopClosureThreshold = 210;      % Higher = fewer false loops
-slamObj.LoopClosureSearchRadius = 8;     % Search radius for loop closures
+slamObj.LoopClosureThreshold = 150;      % Lower = detect more loops
+slamObj.LoopClosureSearchRadius = 4;     % Smaller room = smaller radius
+slamObj.MovementThreshold = [0.1 0.1];   % Add scan every 10cm / 0.1rad
+slamObj.OptimizationInterval = 2;        % Optimize every 2 loop closures
+
+%% Previous TF pose for relative pose computation
+prevTfPose = [];
 
 %% TF reference (for comparison)
 tfPosInit = [];
@@ -102,10 +107,22 @@ try
 
         currentScan = lidarScan(rangesValid, anglesValid);
 
-        %% Step 4: Add scan to SLAM
-        % addScan rejects scans too close to previous ones, so we don't
-        % need to throttle manually.
-        [isAccepted, loopClosureInfo, optimInfo] = addScan(slamObj, currentScan);
+        %% Step 4: Add scan to SLAM with relative pose from odometry
+        % Using odometry as initial guess greatly improves scan matching.
+        currentTfPose = extractTfPose(tfMsg);
+        if ~isempty(currentTfPose) && ~isempty(prevTfPose)
+            % Compute relative pose [dx dy dtheta] from previous TF
+            dPose = currentTfPose - prevTfPose;
+            % Wrap angle to [-pi, pi]
+            dPose(3) = atan2(sin(dPose(3)), cos(dPose(3)));
+            [isAccepted, loopClosureInfo, optimInfo] = addScan(slamObj, currentScan, dPose);
+        else
+            [isAccepted, loopClosureInfo, optimInfo] = addScan(slamObj, currentScan);
+        end
+
+        if isAccepted && ~isempty(currentTfPose)
+            prevTfPose = currentTfPose;
+        end
 
         if isAccepted
             scanCount = scanCount + 1;
