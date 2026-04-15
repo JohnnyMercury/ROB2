@@ -158,11 +158,22 @@ classdef TurtleBotVisualise
             end
         end
 
-        function obj = updateScan(obj, cart)
+        function obj = updateScan(obj, cart, position, heading)
+            if nargin < 4
+                heading = 0;
+            end
+
+            if nargin < 3 || isempty(position)
+                position = [0, 0];
+            end
+
+            rotation = [cos(heading), -sin(heading); sin(heading), cos(heading)];
+            cartWorld = (rotation * cart')' + position;
+
             if isempty(obj.h_cart)
-                obj.h_cart = scatter(obj.h_ax, cart(:,1), cart(:,2), 10, 'blue', 'filled');
+                obj.h_cart = scatter(obj.h_ax, cartWorld(:,1), cartWorld(:,2), 10, 'blue', 'filled');
             else
-                set(obj.h_cart, 'XData', cart(:,1), 'YData', cart(:,2));
+                set(obj.h_cart, 'XData', cartWorld(:,1), 'YData', cartWorld(:,2));
             end
         end
     end

@@ -18,9 +18,12 @@ cfg.rosDomainId = '30';
 cfg.maxWaitSec = 120;
 cfg.pollInterval = 0.5;
 cfg.firstMsgTimeoutSec = 25;
-cfg.maxLidarRange = 8.0;  % LDS-02: 8.0, LDS-01: 3.5
+cfg.maxLidarRange = 3.5;  % LDS-02: 8.0, LDS-01: 3.5
 cfg.mapResolution = 20;    % cells per meter
 cfg.maxNumScans = 3000;
+cfg.minValidRange = 0.08;      % reject very near noisy returns
+cfg.maxRangeMargin = 0.02;     % drop ranges near max range (no return)
+cfg.rangeMedianWindow = 15;     % odd window for simple spike suppression
 
 % SLAM tuning
 cfg.loopClosureThreshold = 210;
@@ -115,7 +118,11 @@ try
         lastScanStamp = scanStamp;
 
         % Step 3: Build lidarScan object from /scan message.
-        scan = lidarScanFromRos(scanMsg, cfg.maxLidarRange);
+        [scan, nValid] = lidarScanFromRos(scanMsg, cfg.maxLidarRange, cfg.minValidRange, cfg.maxRangeMargin, cfg.rangeMedianWindow);
+        if nValid < 10
+            pause(0.001);
+            continue;
+        end
 
         % Read odometry from /tf and build relative pose increment.
         tfPose = extractOdomPoseFromTf(tfMsg);
@@ -165,7 +172,7 @@ try
         if exist('scan', 'var')
             cart = scan.Cartesian;
             if ~isempty(cart)
-                visualise = updateScan(visualise, cart);
+                visualise = updateScan(visualise, cart, tfPoseRel(1:2), tfPoseRel(3));
             end
         end
 
@@ -220,7 +227,7 @@ function stampStr = readScanStamp(scanMessage)
     stampStr = sprintf('%d_%d', sec, nanosec);
 end
 
-function scan = lidarScanFromRos(scanMessage, maxRange)
+function [scan, nValid] = lidarScanFromRos(scanMessage, maxRange, minValidRange, maxRangeMargin, medianWindow)
     try
         ranges = double(scanMessage.ranges);
         angleMin = double(scanMessage.angle_min);
@@ -234,9 +241,28 @@ function scan = lidarScanFromRos(scanMessage, maxRange)
     ranges = ranges(:);
     angles = angleMin + (0:numel(ranges)-1)' * angleInc;
 
-    invalid = ~isfinite(ranges) | ranges <= 0;
-    ranges(invalid) = maxRange;
-    ranges = min(ranges, maxRange);
+    % Remove invalid and max-range/no-return samples before SLAM.
+    isFinite = isfinite(ranges);
+    isAboveMin = ranges > minValidRange;
+    isBelowMax = ranges < (maxRange - maxRangeMargin);
+    keep = isFinite & isAboveMin & isBelowMax;
+
+    ranges = ranges(keep);
+    angles = angles(keep);
+
+    if isempty(ranges)
+        nValid = 0;
+        scan = lidarScan(0.1, 0);
+        return;
+    end
+
+    % Simple denoising: moving median removes isolated spikes.
+    w = max(1, 2 * floor(medianWindow / 2) + 1); % force odd window
+    if numel(ranges) >= w
+        ranges = movmedian(ranges, w);
+    end
+
+    nValid = numel(ranges);
 
     scan = lidarScan(ranges, angles);
 end
