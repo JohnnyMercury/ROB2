@@ -18,7 +18,6 @@ cfg.rosDomainId = '30';
 cfg.maxWaitSec = 120;
 cfg.pollInterval = 0.5;
 cfg.firstMsgTimeoutSec = 25;
-cfg.runDurationSec = 120;
 cfg.maxLidarRange = 8.0;  % LDS-02: 8.0, LDS-01: 3.5
 cfg.mapResolution = 20;    % cells per meter
 cfg.maxNumScans = 3000;
@@ -80,14 +79,36 @@ tfInitPose = [];
 prevAcceptedTfPose = [];
 acceptedCount = 0;
 
+% Visuals
+mapFig = figure('Name', 'LiDAR SLAM Map (Live)', 'NumberTitle', 'off');
+mapAx = axes('Parent', mapFig);
+show(slamObj, 'Parent', mapAx);
+title(mapAx, 'LiDAR SLAM Occupancy Map (Live)');
+
+visualise = TurtleBotVisualise();
+title(visualise.h_ax, 'TurtleBot Pose from /tf (heading shown)');
+
 disp('Running LiDAR SLAM (Steps 1-5). Move TurtleBot to collect scans...');
-runStart = tic;
 
 try
-    while toc(runStart) < cfg.runDurationSec
+    while true
+        if ~isgraphics(mapFig) || ~isgraphics(visualise.fig)
+            error('L7SLAM:UserClosedFigure', 'A visualization figure was closed by user.');
+        end
+
         % Process each scan once using message timestamp.
         scanStamp = readScanStamp(scanMsg);
         if strcmp(scanStamp, lastScanStamp) % STRing CoMPare
+            tfPoseLive = extractOdomPoseFromTf(tfMsg);
+            if ~isempty(tfPoseLive)
+                if isempty(tfInitPose)
+                    tfInitPose = tfPoseLive;
+                end
+                tfYawLive = wrapToPiLocal(tfPoseLive(3) - tfInitPose(3));
+                tfPoseLiveRel = [tfPoseLive(1) - tfInitPose(1), tfPoseLive(2) - tfInitPose(2), tfYawLive];
+                visualise = updatePose(visualise, tfPoseLiveRel(1:2), tfPoseLiveRel(3));
+                drawnow limitrate;
+            end
             pause(0.001);
             continue;
         end
@@ -132,14 +153,32 @@ try
                   num2str(currentPose(1), '%.3f') ' ' ...
                   num2str(currentPose(2), '%.3f') ' ' ...
                   num2str(currentPose(3), '%.3f') ']']);
+
+            % Live map refresh on each accepted scan.
+            cla(mapAx);
+            show(slamObj, 'Parent', mapAx);
+            title(mapAx, 'LiDAR SLAM Occupancy Map (Live)');
         end
+
+        % Continuously show robot heading in TurtleBotVisualise.
+        visualise = updatePose(visualise, tfPoseRel(1:2), tfPoseRel(3));
+        if exist('scan', 'var')
+            cart = scan.Cartesian;
+            if ~isempty(cart)
+                visualise = updateScan(visualise, cart);
+            end
+        end
+
+        drawnow limitrate;
 
         pause(0.001);
     end
 
 catch ME
     clear scanSub tfSub
-    rethrow(ME)
+    if ~strcmp(ME.identifier, 'L7SLAM:UserClosedFigure')
+        rethrow(ME)
+    end
 end
 
 clear scanSub tfSub
@@ -149,20 +188,6 @@ disp(['Accepted scans: ' num2str(acceptedCount)]);
 
 [scans, poses] = scansAndPoses(slamObj);
 disp(['Pose graph nodes: ' num2str(size(poses, 1))]);
-
-figure('Name', 'LiDAR SLAM Map', 'NumberTitle', 'off');
-show(slamObj);
-title('LiDAR SLAM Occupancy Map (Steps 1-5)');
-
-if ~isempty(poses)
-    figure('Name', 'LiDAR SLAM Trajectory', 'NumberTitle', 'off');
-    plot(poses(:,1), poses(:,2), 'k-', 'LineWidth', 1.5);
-    grid on
-    axis equal
-    xlabel('x [m]');
-    ylabel('y [m]');
-    title('Trajectory from scansAndPoses');
-end
 
 %% Callbacks and helpers
 function scanCallback(message)
