@@ -26,10 +26,13 @@ cfg.accelLpfTauSec = 0.35;       % low-pass time constant for acceleration smoot
 cfg.gyroDeadband = 0.03;         % rad/s threshold for stationary detection
 cfg.stationaryHoldSec = 0.25;    % require low accel/gyro for this long before zeroing
 cfg.planarMotionOnly = true;     % TurtleBot operates in 2D; reject vertical integration
+cfg.useYawOnlyAccelTransform = true; % avoids roll/pitch coupling from IMU tilt
 cfg.enableSimpleFusion = true;   % fuse IMU integration with /tf odometry
 cfg.fusionPosTauSec = 1.2;       % smaller => stronger position correction to /tf
 cfg.fusionYawTauSec = 0.8;       % smaller => stronger heading correction to /tf
 cfg.fusionVelFromPosErrGain = 0.15; % velocity correction from position innovation
+cfg.showTfRobotInVisualizer = false; % true draws second robot icon from /tf
+cfg.showTfTrajectoryInFigure = false; % true draws /tf trajectory in 2D comparison figure
 
 % Gravity compensation: true subtracts [0 0 9.81] after rotating IMU accel
 % to world frame. Set false if your IMU already outputs gravity-free accel.
@@ -119,7 +122,11 @@ showRobotVisualizer = cfg.showRobotVisualizer;
 
 if showRobotVisualizer
     visualise = TurtleBotVisualise();
-    title(visualise.h_ax, 'Black: Fused Estimate (IMU + /tf), Blue: /tf Odometry');
+    if cfg.showTfRobotInVisualizer
+        title(visualise.h_ax, 'Black: Fused Estimate (IMU + /tf), Blue: /tf Odometry');
+    else
+        title(visualise.h_ax, 'Black: Fused Estimate (IMU + /tf)');
+    end
 else
     visualise = [];
 end
@@ -136,8 +143,13 @@ xlabel(ax, 'x [m]');
 ylabel(ax, 'y [m]');
 title(ax, '2D Trajectory Comparison');
 hLineDr = plot(ax, NaN, NaN, 'b-', 'LineWidth', 1.5);
-hLineTf = plot(ax, NaN, NaN, 'r--', 'LineWidth', 1.5);
-legend(ax, {'Fused estimate (IMU + /tf)', 'Odometry from /tf'}, 'Location', 'best');
+if cfg.showTfTrajectoryInFigure
+    hLineTf = plot(ax, NaN, NaN, 'r--', 'LineWidth', 1.5);
+    legend(ax, {'Fused estimate (IMU + /tf)', 'Odometry from /tf'}, 'Location', 'best');
+else
+    hLineTf = [];
+    legend(ax, {'Fused estimate (IMU + /tf)'}, 'Location', 'best');
+end
 
 disp('Running dead reckoning. Move TurtleBot to evaluate localization drift...');
 lastPlotUpdate = -inf;
@@ -178,11 +190,24 @@ try
         aBody = [imuMsg.linear_acceleration.x, imuMsg.linear_acceleration.y, imuMsg.linear_acceleration.z];
         wBody = [imuMsg.angular_velocity.x, imuMsg.angular_velocity.y, imuMsg.angular_velocity.z];
 
-        % Transform acceleration to world frame using quaternion rotation.
-        aWorldRaw = quatrotate(qMatlab, aBody);
-
+        aBodyLin = aBody;
         if removeGravity
-            aWorldRaw = aWorldRaw - gWorld;
+            % Estimate gravity in IMU/body frame from full orientation and
+            % remove it before any planar projection.
+            gBody = quatrotate(quatconj(qMatlab), gWorld);
+            aBodyLin = aBody - gBody;
+        end
+
+        % Transform acceleration to world frame.
+        % For planar TurtleBot motion, use yaw-only mapping to avoid
+        % roll/pitch tilt injecting false x/y acceleration.
+        if cfg.useYawOnlyAccelTransform
+            c = cos(yawImuRel);
+            s = sin(yawImuRel);
+            aXYWorld = [c, -s; s, c] * aBodyLin(1:2)';
+            aWorldRaw = [aXYWorld(1), aXYWorld(2), 0];
+        else
+            aWorldRaw = quatrotate(qMatlab, aBodyLin);
         end
 
         % Estimate acceleration bias while robot is initially stationary.
@@ -303,13 +328,15 @@ try
             end
 
             set(hLineDr, 'XData', pDrHist(oi,1), 'YData', pDrHist(oi,2));
-            validTf = all(isfinite(pTfHist(oi,:)), 2);
-            if any(validTf)
-                set(hLineTf, 'XData', pTfHist(oi(validTf),1), 'YData', pTfHist(oi(validTf),2));
+            if cfg.showTfTrajectoryInFigure
+                validTf = all(isfinite(pTfHist(oi,:)), 2);
+                if any(validTf)
+                    set(hLineTf, 'XData', pTfHist(oi(validTf),1), 'YData', pTfHist(oi(validTf),2));
+                end
             end
 
             if showRobotVisualizer
-                if all(isfinite(tfPoseRel))
+                if cfg.showTfRobotInVisualizer && all(isfinite(tfPoseRel))
                     visualise = updateComparison(visualise, pWorld(1:2), yawImuRel, tfPoseRel(1:2), tfPoseRel(3));
                 else
                     visualise = updatePose(visualise, pWorld(1:2), yawImuRel);
