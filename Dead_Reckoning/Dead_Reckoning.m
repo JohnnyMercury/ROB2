@@ -18,7 +18,10 @@ cfg.runDurationSec = 120;
 cfg.plotUpdateInterval = 0.2;    % seconds, ~5 Hz GUI refresh
 cfg.maxHistoryLength = 500;      % keep bounded history for fast plotting
 cfg.accelDeadband = 0.08;        % m/s^2 noise floor for zero-motion rejection
-cfg.visualizeRobotFromTF = true; % true: robot icon follows TF, marker follows DR
+cfg.maxImuDtSec = 0.1;           % clamp dt for robustness to delayed samples
+cfg.firstMsgTimeoutSec = 20;     % timeout waiting for first IMU/TF messages
+cfg.biasCalibSec = 2.0;          % initial stationary window for accel bias estimation
+cfg.zeroVelocityOnLowAccel = true;
 
 % Gravity compensation: true subtracts [0 0 9.81] after rotating IMU accel
 % to world frame. Set false if your IMU already outputs gravity-free accel.
@@ -27,8 +30,6 @@ cfg.gWorld = [0, 0, 9.81];
 
 % Visualization toggles.
 cfg.showRobotVisualizer = true;
-cfg.showHeadingPlot = true;
-cfg.showDistancePlot = true;
 
 %% ROS2 setup
 setenv('ROS_DOMAIN_ID', cfg.rosDomainId);
@@ -44,7 +45,8 @@ disp('Waiting for required ROS2 topics...');
 while toc(startTime) < maxWaitSec
     try
         topicOutput = evalc("ros2 topic list");
-        topics = string(split(string(topicOutput)));
+        topics = strtrim(splitlines(string(topicOutput)));
+        topics = topics(topics ~= "");
         if all(ismember(requiredTopics, topics))
             disp(['Topics found after ' num2str(toc(startTime), '%.1f') ' seconds.']);
             break;
@@ -66,7 +68,11 @@ pause(0.5);
 
 %% Wait for first IMU and TF samples
 disp('Waiting for first IMU and TF messages...');
+firstMsgStart = tic;
 while isempty(imuMsg) || isempty(tfMsg)
+    if toc(firstMsgStart) > cfg.firstMsgTimeoutSec
+        error('Timeout waiting for first /imu and /tf messages.');
+    end
     pause(0.01);
 end
 
@@ -74,6 +80,14 @@ end
 pWorld = [0, 0, 0];
 vWorld = [0, 0, 0];
 yawImuInit = [];
+imuTimePrev = NaN;
+
+% Bias estimate in world frame (computed during initial stationary period).
+biasWorld = [0, 0, 0];
+biasAccum = [0, 0, 0];
+biasCount = 0;
+biasReady = false;
+biasStartImuSec = NaN;
 
 % Keep initial TF position as reference origin.
 tfInitPose = [];
@@ -92,31 +106,16 @@ headingTfHist = NaN(N, 1);
 histIdx = 0;  % running sample count
 
 showRobotVisualizer = cfg.showRobotVisualizer;
-showHeadingPlot = cfg.showHeadingPlot;
-showDistancePlot = cfg.showDistancePlot;
 
 if showRobotVisualizer
     visualise = TurtleBotVisualise();
+    title(visualise.h_ax, 'Black: IMU Dead Reckoning, Blue: /tf Odometry');
 else
     visualise = [];
 end
 
-if showHeadingPlot
-    hHead = plotHeadings();
-else
-    hHead = [];
-end
-
-if showDistancePlot
-    hDist = plotDistance();
-else
-    hDist = [];
-end
-
 loopStart = tic;
-tPrev = 0;
 runDurationSec = cfg.runDurationSec;
-lastImuStamp = '';
 
 figure('Name', 'L7-E1 Dead Reckoning vs TF Odometry', 'NumberTitle', 'off');
 ax = gca;
@@ -135,18 +134,27 @@ lastPlotUpdate = -inf;
 
 try
     while true
-        % Integrate only once per new IMU sample to avoid over-integrating
-        % the same message and creating false motion/drift.
-        imuStamp = readImuStamp(imuMsg);
-        if strcmp(imuStamp, lastImuStamp)
+        % Integrate once per new IMU timestamp.
+        imuTimeNow = readImuTimeSec(imuMsg);
+        if ~isfinite(imuTimeNow)
             pause(0.001);
             continue;
         end
-        lastImuStamp = imuStamp;
 
+        if ~isnan(imuTimePrev)
+            dt = imuTimeNow - imuTimePrev;
+        else
+            dt = NaN;
+        end
+        imuTimePrev = imuTimeNow;
+
+        if ~isfinite(dt) || dt <= 0
+            pause(0.001);
+            continue;
+        end
+
+        dt = min(dt, cfg.maxImuDtSec);
         tNow = toc(loopStart);
-        dt = max(tNow - tPrev, 1e-3);
-        tPrev = tNow;
 
         % Read latest IMU orientation and acceleration (body frame).
         qRos = [imuMsg.orientation.x, imuMsg.orientation.y, imuMsg.orientation.z, imuMsg.orientation.w];
@@ -160,14 +168,39 @@ try
         aBody = [imuMsg.linear_acceleration.x, imuMsg.linear_acceleration.y, imuMsg.linear_acceleration.z];
 
         % Transform acceleration to world frame using quaternion rotation.
-        aWorld = quatrotate(qMatlab, aBody);
+        aWorldRaw = quatrotate(qMatlab, aBody);
 
         if removeGravity
-            aWorld = aWorld - gWorld;
+            aWorldRaw = aWorldRaw - gWorld;
         end
+
+        % Estimate acceleration bias while robot is initially stationary.
+        if ~biasReady
+            if isnan(biasStartImuSec)
+                biasStartImuSec = imuTimeNow;
+                disp('Calibrating IMU bias. Keep robot still...');
+            end
+
+            biasAccum = biasAccum + aWorldRaw;
+            biasCount = biasCount + 1;
+
+            if (imuTimeNow - biasStartImuSec) >= cfg.biasCalibSec
+                biasWorld = biasAccum / max(biasCount, 1);
+                biasReady = true;
+                disp(['IMU bias estimate [m/s^2]: [' num2str(biasWorld(1), '%.4f') ', ' num2str(biasWorld(2), '%.4f') ', ' num2str(biasWorld(3), '%.4f') ']']);
+            end
+
+            pause(0.001);
+            continue;
+        end
+
+        aWorld = aWorldRaw - biasWorld;
 
         if norm(aWorld) < cfg.accelDeadband
             aWorld = [0, 0, 0];
+            if cfg.zeroVelocityOnLowAccel
+                vWorld = [0, 0, 0];
+            end
         end
 
         % Dead reckoning integration:
@@ -182,7 +215,8 @@ try
             if isempty(tfInitPose)
                 tfInitPose = tfPose;
             end
-            tfPoseRel = tfPose - tfInitPose;
+            tfYawRel = wrapToPiLocal(tfPose(3) - tfInitPose(3));
+            tfPoseRel = [tfPose(1) - tfInitPose(1), tfPose(2) - tfInitPose(2), tfYawRel];
         else
             tfPoseRel = [nan, nan, nan];
         end
@@ -226,22 +260,11 @@ try
             end
 
             if showRobotVisualizer
-                if cfg.visualizeRobotFromTF && all(isfinite(tfPoseRel))
-                    visualise = updatePositionDesired(visualise, pWorld(1:2));
-                    visualise = updatePose(visualise, tfPoseRel(1:2), tfPoseRel(3));
+                if all(isfinite(tfPoseRel))
+                    visualise = updateComparison(visualise, pWorld(1:2), yawImuRel, tfPoseRel(1:2), tfPoseRel(3));
                 else
-                    visualise = updatePositionDesired(visualise, tfPoseRel(1:2));
                     visualise = updatePose(visualise, pWorld(1:2), yawImuRel);
                 end
-            end
-
-            if showHeadingPlot
-                hHead = plotHeadings(hHead, tHist(oi), headingTfHist(oi), headingImuHist(oi));
-            end
-
-            if showDistancePlot
-                validErr = isfinite(distanceErrHist(oi));
-                hDist = plotDistance(hDist, tHist(oi(validErr)), distanceErrHist(oi(validErr)));
             end
 
             drawnow limitrate;
@@ -369,18 +392,13 @@ function yaw = quatRosToYaw(x, y, z, w)
 end
 
 function a = wrapToPiLocal(a)
-    while a > pi
-        a = a - 2 * pi;
-    end
-    while a < -pi
-        a = a + 2 * pi;
-    end
+    a = mod(a + pi, 2 * pi) - pi;
 end
 
-function stampStr = readImuStamp(imuMessage)
-% Creates a comparable string timestamp from IMU header.
-    sec = 0;
-    nanosec = 0;
+function tSec = readImuTimeSec(imuMessage)
+% Returns IMU ROS timestamp in seconds.
+    sec = NaN;
+    nanosec = NaN;
 
     try
         sec = double(imuMessage.header.stamp.sec);
@@ -390,10 +408,10 @@ function stampStr = readImuStamp(imuMessage)
             sec = double(imuMessage.Header.Stamp.Sec);
             nanosec = double(imuMessage.Header.Stamp.Nanosec);
         catch
-            stampStr = sprintf('fallback_%f', now);
+            tSec = NaN;
             return;
         end
     end
 
-    stampStr = sprintf('%d_%d', sec, nanosec);
+    tSec = sec + 1e-9 * nanosec;
 end
