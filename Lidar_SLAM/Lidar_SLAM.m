@@ -9,53 +9,32 @@
 % 7. Compare SLAM trajectory with TF odometry
 % 8. [Optional] Generate occupancy map
 % 9. [Optional] Extract optimized poses from PoseGraph
+%
+% To control the robot, run in a separate SSH terminal:
+%   ros2 run turtlebot3_teleop teleop_keyboard
 
 clear all
 clc
 close all
 
 %% Global variables for callbacks
-global scanMsg tfMsg linVel angVel
+global scanMsg tfMsg
 scanMsg = [];
 tfMsg = [];
-linVel = 0.0;
-angVel = 0.0;
-
-%% Control parameters
-maxLinVel = 0.15;   % m/s
-maxAngVel = 0.8;    % rad/s
-linStep = 0.05;     % speed increment per key press
-angStep = 0.2;
 
 %% ROS2 setup
 setenv('ROS_DOMAIN_ID', '30');
 node = ros2node('/base_station_lidar_slam');
 
-%% Subscribers and publishers
+%% Subscribers
 scanSub = ros2subscriber(node, '/scan', @scanCallback, 'Reliability', 'besteffort');
 tfSub = ros2subscriber(node, '/tf', @tfCallback, 'Reliability', 'besteffort');
-cmdPub = ros2publisher(node, '/cmd_vel', 'geometry_msgs/Twist');
-cmdMsg = ros2message('geometry_msgs/Twist');
 
 disp('Waiting for /scan and /tf messages...');
 while isempty(scanMsg) || isempty(tfMsg)
     pause(0.1);
 end
 disp('Messages received. Starting Lidar SLAM...');
-
-%% Keyboard control window
-figCtrl = figure('Name', 'Keyboard Control (W/A/S/D, Space=stop)', ...
-    'NumberTitle', 'off', 'Position', [100 100 400 200]);
-ax = axes('Parent', figCtrl);
-text(0.5, 0.7, 'Click here first, then use keys:', ...
-    'HorizontalAlignment', 'center', 'FontSize', 12, 'Parent', ax);
-text(0.5, 0.5, 'W=forward  S=back  A=left  D=right', ...
-    'HorizontalAlignment', 'center', 'FontSize', 11, 'Parent', ax);
-text(0.5, 0.3, 'Space=stop  Q=quit', ...
-    'HorizontalAlignment', 'center', 'FontSize', 11, 'Parent', ax);
-axis(ax, 'off');
-set(figCtrl, 'KeyPressFcn', @(src, event) keyHandler(event, ...
-    linStep, angStep, maxLinVel, maxAngVel));
 
 %% Step 1: Create lidarSLAM object
 % Parameters:
@@ -92,7 +71,7 @@ runDuration = 120;  % seconds
 lastScanTime = -1;
 scanCount = 0;
 
-disp('Building map. Move the robot around...');
+disp('Building map. Drive the robot around using teleop_keyboard...');
 
 try
     while toc(tStart) < runDuration
@@ -163,33 +142,15 @@ try
             drawnow limitrate;
         end
 
-        %% Publish velocity command based on keyboard state
-        cmdMsg.linear.x = linVel;
-        cmdMsg.angular.z = angVel;
-        send(cmdPub, cmdMsg);
-
-        %% Check if control window was closed
-        if ~isgraphics(figCtrl)
-            break;
-        end
-
         pause(0.02);
     end
 
 catch ME
-    % Stop robot on error
-    cmdMsg.linear.x = 0.0;
-    cmdMsg.angular.z = 0.0;
-    try send(cmdPub, cmdMsg); catch; end
-    clear scanSub tfSub cmdPub
+    clear scanSub tfSub
     rethrow(ME);
 end
 
-% Stop robot on normal exit
-cmdMsg.linear.x = 0.0;
-cmdMsg.angular.z = 0.0;
-send(cmdPub, cmdMsg);
-clear scanSub tfSub cmdPub
+clear scanSub tfSub
 
 %% Step 8 [Optional]: Generate occupancy map
 [scans, poses] = scansAndPoses(slamObj);
@@ -228,29 +189,6 @@ end
 function tfCallback(message)
     global tfMsg
     tfMsg = message;
-end
-
-%% Keyboard handler for teleop
-function keyHandler(event, linStep, angStep, maxLinVel, maxAngVel)
-    global linVel angVel
-
-    switch event.Key
-        case 'w'
-            linVel = min(linVel + linStep, maxLinVel);
-        case 's'
-            linVel = max(linVel - linStep, -maxLinVel);
-        case 'a'
-            angVel = min(angVel + angStep, maxAngVel);
-        case 'd'
-            angVel = max(angVel - angStep, -maxAngVel);
-        case 'space'
-            linVel = 0.0;
-            angVel = 0.0;
-        case 'q'
-            linVel = 0.0;
-            angVel = 0.0;
-            close(gcbf);
-    end
 end
 
 %% Helper: extract [x y yaw] from /tf transform (odom -> base_link)
