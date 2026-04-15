@@ -26,6 +26,10 @@ cfg.accelLpfTauSec = 0.35;       % low-pass time constant for acceleration smoot
 cfg.gyroDeadband = 0.03;         % rad/s threshold for stationary detection
 cfg.stationaryHoldSec = 0.25;    % require low accel/gyro for this long before zeroing
 cfg.planarMotionOnly = true;     % TurtleBot operates in 2D; reject vertical integration
+cfg.enableSimpleFusion = true;   % fuse IMU integration with /tf odometry
+cfg.fusionPosTauSec = 1.2;       % smaller => stronger position correction to /tf
+cfg.fusionYawTauSec = 0.8;       % smaller => stronger heading correction to /tf
+cfg.fusionVelFromPosErrGain = 0.15; % velocity correction from position innovation
 
 % Gravity compensation: true subtracts [0 0 9.81] after rotating IMU accel
 % to world frame. Set false if your IMU already outputs gravity-free accel.
@@ -115,7 +119,7 @@ showRobotVisualizer = cfg.showRobotVisualizer;
 
 if showRobotVisualizer
     visualise = TurtleBotVisualise();
-    title(visualise.h_ax, 'Black: IMU Dead Reckoning, Blue: /tf Odometry');
+    title(visualise.h_ax, 'Black: Fused Estimate (IMU + /tf), Blue: /tf Odometry');
 else
     visualise = [];
 end
@@ -133,7 +137,7 @@ ylabel(ax, 'y [m]');
 title(ax, '2D Trajectory Comparison');
 hLineDr = plot(ax, NaN, NaN, 'b-', 'LineWidth', 1.5);
 hLineTf = plot(ax, NaN, NaN, 'r--', 'LineWidth', 1.5);
-legend(ax, {'Dead reckoning (IMU)', 'Odometry from /tf'}, 'Location', 'best');
+legend(ax, {'Fused estimate (IMU + /tf)', 'Odometry from /tf'}, 'Location', 'best');
 
 disp('Running dead reckoning. Move TurtleBot to evaluate localization drift...');
 lastPlotUpdate = -inf;
@@ -252,6 +256,20 @@ try
             tfPoseRel = [nan, nan, nan];
         end
 
+        % Simple complementary fusion:
+        % IMU provides prediction, /tf provides low-frequency correction.
+        if cfg.enableSimpleFusion && all(isfinite(tfPoseRel))
+            kPos = dt / (cfg.fusionPosTauSec + dt);
+            kYaw = dt / (cfg.fusionYawTauSec + dt);
+
+            posErr = tfPoseRel(1:2) - pWorld(1:2);
+            pWorld(1:2) = pWorld(1:2) + kPos * posErr;
+            yawErr = wrapToPiLocal(tfPoseRel(3) - yawImuRel);
+            yawImuRel = wrapToPiLocal(yawImuRel + kYaw * yawErr);
+
+            vWorld(1:2) = vWorld(1:2) + cfg.fusionVelFromPosErrGain * (kPos / max(dt, 1e-3)) * posErr;
+        end
+
         % Log for plotting and post-analysis (circular buffer).
         histIdx = histIdx + 1;
         ci = mod(histIdx - 1, N) + 1;  % circular index 1..N
@@ -345,7 +363,11 @@ if any(validTf)
     title('Dead reckoning position error relative to /tf odometry');
 end
 
-disp('Exercise 1 completed.');
+if cfg.enableSimpleFusion
+    disp('Exercise 1 completed with simple IMU + /tf fusion.');
+else
+    disp('Exercise 1 completed.');
+end
 
 %% Callbacks and helpers
 function imuCallback(message)
