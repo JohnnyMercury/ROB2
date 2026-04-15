@@ -42,11 +42,13 @@ zuptCounter = 0;             % consecutive "stationary" samples needed
 zuptRequired = 5;            % samples
 runDuration = 60;            % seconds total run time
 
-%% Step 1: IMU bias calibration
-% Keep robot stationary during this phase.
-disp('Calibrating IMU bias (keep robot still)...');
-biasSum = [0, 0, 0];
-biasCount = 0;
+%% Step 1: IMU calibration in BODY frame
+% When stationary, IMU reads gravity + bias in body frame.
+% Since TurtleBot stays flat (no pitch/roll change), gravity in body frame is constant.
+% So: subtract averaged stationary reading BEFORE rotating to world frame.
+disp('Calibrating IMU (keep robot still)...');
+aBodySum = [0, 0, 0];
+calibCount = 0;
 tCalibStart = tic;
 lastImuTimeCal = -1;
 
@@ -62,21 +64,15 @@ while toc(tCalibStart) < calibrationDuration
              imuMsg.linear_acceleration.y, ...
              imuMsg.linear_acceleration.z];
 
-    qRos = [imuMsg.orientation.x, imuMsg.orientation.y, ...
-            imuMsg.orientation.z, imuMsg.orientation.w];
-    qMatlab = [qRos(4), qRos(1), qRos(2), qRos(3)];
-
-    % Transform to world frame and store (gravity + bias)
-    aWorld = quatrotate(qMatlab, aBody);
-    biasSum = biasSum + aWorld;
-    biasCount = biasCount + 1;
+    aBodySum = aBodySum + aBody;
+    calibCount = calibCount + 1;
 end
 
-% Average = gravity + bias. We subtract this later instead of [0,0,9.81].
-% This automatically compensates for both gravity and any sensor bias.
-accelBias = biasSum / biasCount;
-fprintf('Calibrated bias (world frame): [%.3f, %.3f, %.3f] m/s^2\n', ...
-    accelBias(1), accelBias(2), accelBias(3));
+% Stationary body-frame reading (gravity + bias). Subtract from future readings
+% to get true body-frame acceleration (zero when stationary, nonzero when moving).
+aBodyStationary = aBodySum / calibCount;
+fprintf('Stationary reading (body frame): [%.3f, %.3f, %.3f] m/s^2\n', ...
+    aBodyStationary(1), aBodyStationary(2), aBodyStationary(3));
 
 %% Dead reckoning state
 position = [0, 0, 0];
@@ -129,11 +125,9 @@ try
                 imuMsg.orientation.z, imuMsg.orientation.w];
         qMatlab = [qRos(4), qRos(1), qRos(2), qRos(3)];
 
-        %% Step 2: Transform body->world
-        aWorld = quatrotate(qMatlab, aBody);
-
-        % Remove bias (includes gravity compensation)
-        aWorld = aWorld - accelBias;
+        %% Step 2: Remove bias+gravity in body frame, then transform to world
+        aBodyClean = aBody - aBodyStationary;
+        aWorld = quatrotate(qMatlab, aBodyClean);
 
         % Deadband filter: treat small acceleration as zero (noise)
         if norm(aWorld) < deadband
