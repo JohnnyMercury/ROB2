@@ -22,6 +22,10 @@ cfg.maxImuDtSec = 0.1;           % clamp dt for robustness to delayed samples
 cfg.firstMsgTimeoutSec = 20;     % timeout waiting for first IMU/TF messages
 cfg.biasCalibSec = 2.0;          % initial stationary window for accel bias estimation
 cfg.zeroVelocityOnLowAccel = true;
+cfg.accelLpfTauSec = 0.35;       % low-pass time constant for acceleration smoothing
+cfg.gyroDeadband = 0.03;         % rad/s threshold for stationary detection
+cfg.stationaryHoldSec = 0.25;    % require low accel/gyro for this long before zeroing
+cfg.planarMotionOnly = true;     % TurtleBot operates in 2D; reject vertical integration
 
 % Gravity compensation: true subtracts [0 0 9.81] after rotating IMU accel
 % to world frame. Set false if your IMU already outputs gravity-free accel.
@@ -88,6 +92,8 @@ biasAccum = [0, 0, 0];
 biasCount = 0;
 biasReady = false;
 biasStartImuSec = NaN;
+aWorldFilt = [0, 0, 0];
+stationaryAccumSec = 0;
 
 % Keep initial TF position as reference origin.
 tfInitPose = [];
@@ -166,6 +172,7 @@ try
         yawImuRel = wrapToPiLocal(yawImu - yawImuInit);
 
         aBody = [imuMsg.linear_acceleration.x, imuMsg.linear_acceleration.y, imuMsg.linear_acceleration.z];
+        wBody = [imuMsg.angular_velocity.x, imuMsg.angular_velocity.y, imuMsg.angular_velocity.z];
 
         % Transform acceleration to world frame using quaternion rotation.
         aWorldRaw = quatrotate(qMatlab, aBody);
@@ -196,18 +203,42 @@ try
 
         aWorld = aWorldRaw - biasWorld;
 
-        if norm(aWorld) < cfg.accelDeadband
-            aWorld = [0, 0, 0];
+        % First-order LPF on acceleration to suppress high-frequency IMU noise.
+        alpha = dt / (cfg.accelLpfTauSec + dt);
+        aWorldFilt = aWorldFilt + alpha * (aWorld - aWorldFilt);
+
+        aWorldUse = aWorldFilt;
+        isLowAccel = norm(aWorldUse) < cfg.accelDeadband;
+        isLowGyro = norm(wBody) < cfg.gyroDeadband;
+        if isLowAccel && isLowGyro
+            stationaryAccumSec = stationaryAccumSec + dt;
+        else
+            stationaryAccumSec = 0;
+        end
+
+        isStationary = stationaryAccumSec >= cfg.stationaryHoldSec;
+        if isStationary
+            aWorldUse = [0, 0, 0];
+        end
+
+        if norm(aWorldUse) < cfg.accelDeadband
+            aWorldUse = [0, 0, 0];
             if cfg.zeroVelocityOnLowAccel
                 vWorld = [0, 0, 0];
             end
         end
 
+        if cfg.planarMotionOnly
+            aWorldUse(3) = 0;
+            vWorld(3) = 0;
+            pWorld(3) = 0;
+        end
+
         % Dead reckoning integration:
         % p[k+1] = p[k] + v[k]*dt + 1/2*a[k]*dt^2
         % v[k+1] = v[k] + a[k]*dt
-        pWorld = pWorld + vWorld * dt + 0.5 * aWorld * dt * dt;
-        vWorld = vWorld + aWorld * dt;
+        pWorld = pWorld + vWorld * dt + 0.5 * aWorldUse * dt * dt;
+        vWorld = vWorld + aWorldUse * dt;
 
         % Extract odometry pose from /tf.
         tfPose = extractOdomPoseFromTf(tfMsg);
