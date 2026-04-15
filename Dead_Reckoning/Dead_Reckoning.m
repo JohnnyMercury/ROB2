@@ -4,6 +4,11 @@
 % 2. Transform acceleration from body frame to world frame using quatrotate()
 % 3. Integrate twice to get displacement
 % 4. Compare with odometry from /tf topic
+%
+% Noise mitigation:
+% - IMU bias calibration (first 2 seconds averaged, then subtracted)
+% - Deadband filter (zero out small accelerations)
+% - Zero-Velocity Update (ZUPT): reset velocity when robot is stationary
 
 clear all
 clc
@@ -27,23 +32,66 @@ disp('Waiting for IMU and TF messages...');
 while isempty(imuMsg) || isempty(tfMsg)
     pause(0.1);
 end
-disp('Messages received. Starting dead reckoning...');
+disp('Messages received.');
+
+%% Configuration
+calibrationDuration = 2.0;   % seconds to estimate bias at start
+deadband = 0.15;             % m/s^2, zero small accelerations (noise floor)
+zuptThreshold = 0.20;        % m/s^2, below this we assume robot is stationary
+zuptCounter = 0;             % consecutive "stationary" samples needed
+zuptRequired = 5;            % samples
+runDuration = 60;            % seconds total run time
+
+%% Step 1: IMU bias calibration
+% Keep robot stationary during this phase.
+disp('Calibrating IMU bias (keep robot still)...');
+biasSum = [0, 0, 0];
+biasCount = 0;
+tCalibStart = tic;
+lastImuTimeCal = -1;
+
+while toc(tCalibStart) < calibrationDuration
+    imuTime = double(imuMsg.header.stamp.sec) + double(imuMsg.header.stamp.nanosec) * 1e-9;
+    if imuTime == lastImuTimeCal
+        pause(0.005);
+        continue;
+    end
+    lastImuTimeCal = imuTime;
+
+    aBody = [imuMsg.linear_acceleration.x, ...
+             imuMsg.linear_acceleration.y, ...
+             imuMsg.linear_acceleration.z];
+
+    qRos = [imuMsg.orientation.x, imuMsg.orientation.y, ...
+            imuMsg.orientation.z, imuMsg.orientation.w];
+    qMatlab = [qRos(4), qRos(1), qRos(2), qRos(3)];
+
+    % Transform to world frame and store (gravity + bias)
+    aWorld = quatrotate(qMatlab, aBody);
+    biasSum = biasSum + aWorld;
+    biasCount = biasCount + 1;
+end
+
+% Average = gravity + bias. We subtract this later instead of [0,0,9.81].
+% This automatically compensates for both gravity and any sensor bias.
+accelBias = biasSum / biasCount;
+fprintf('Calibrated bias (world frame): [%.3f, %.3f, %.3f] m/s^2\n', ...
+    accelBias(1), accelBias(2), accelBias(3));
 
 %% Dead reckoning state
-position = [0, 0, 0]; % Estimated position in world frame [x y z]
-velocity = [0, 0, 0]; % Estimated velocity in world frame
-gravity  = [0, 0, 9.81]; % Gravity vector in world frame (Z up)
+position = [0, 0, 0];
+velocity = [0, 0, 0];
 
-%% TF reference (for comparison)
+%% TF reference
 tfPosInit = [];
 tfPosRel = [0, 0, 0];
 
-%% Logging for plotting
+%% Logging
 drHistory = [];
 tfHistory = [];
 timeHistory = [];
 
-%% Figure for trajectory comparison
+%% Figure
 figure('Name', 'Dead Reckoning vs TF Odometry', 'NumberTitle', 'off');
 hold on; grid on; axis equal;
 xlabel('x [m]'); ylabel('y [m]');
@@ -56,11 +104,11 @@ legend('Dead Reckoning (IMU)', 'TF Odometry', 'Location', 'best');
 tStart = tic;
 tPrev = 0;
 lastImuTime = -1;
-runDuration = 60; % seconds
+
+disp('Running dead reckoning. Move the robot now...');
 
 try
     while toc(tStart) < runDuration
-        % Use IMU timestamp to avoid integrating same sample twice
         imuTime = double(imuMsg.header.stamp.sec) + double(imuMsg.header.stamp.nanosec) * 1e-9;
         if imuTime == lastImuTime
             pause(0.005);
@@ -72,29 +120,43 @@ try
         dt = max(tNow - tPrev, 1e-3);
         tPrev = tNow;
 
-        %% Step 1: Get acceleration and orientation from IMU
+        %% Step 1: Get acceleration and orientation
         aBody = [imuMsg.linear_acceleration.x, ...
                  imuMsg.linear_acceleration.y, ...
                  imuMsg.linear_acceleration.z];
 
-        % Quaternion from ROS [x y z w] -> MATLAB [w x y z]
         qRos = [imuMsg.orientation.x, imuMsg.orientation.y, ...
                 imuMsg.orientation.z, imuMsg.orientation.w];
         qMatlab = [qRos(4), qRos(1), qRos(2), qRos(3)];
 
-        %% Step 2: Transform acceleration from body to world frame
+        %% Step 2: Transform body->world
         aWorld = quatrotate(qMatlab, aBody);
 
-        % Remove gravity component (IMU reads gravity when stationary)
-        aWorld = aWorld - gravity;
+        % Remove bias (includes gravity compensation)
+        aWorld = aWorld - accelBias;
 
-        %% Step 3: Double integration (acceleration -> velocity -> position)
-        % p[k+1] = p[k] + v[k]*dt + 0.5*a[k]*dt^2
-        % v[k+1] = v[k] + a[k]*dt
+        % Deadband filter: treat small acceleration as zero (noise)
+        if norm(aWorld) < deadband
+            aWorld = [0, 0, 0];
+        end
+
+        %% Step 3: Double integration
         position = position + velocity * dt + 0.5 * aWorld * dt^2;
         velocity = velocity + aWorld * dt;
 
-        %% Step 5: Get TF odometry for comparison
+        %% Zero Velocity Update (ZUPT)
+        % If robot appears stationary for several consecutive samples,
+        % reset velocity to prevent drift accumulation.
+        if norm(aWorld) < zuptThreshold
+            zuptCounter = zuptCounter + 1;
+            if zuptCounter >= zuptRequired
+                velocity = [0, 0, 0];
+            end
+        else
+            zuptCounter = 0;
+        end
+
+        %% Step 5: TF odometry for comparison
         tfPose = extractTfPose(tfMsg);
         if ~isempty(tfPose)
             if isempty(tfPosInit)
@@ -103,12 +165,12 @@ try
             tfPosRel = tfPose - tfPosInit;
         end
 
-        %% Log data
+        %% Log
         drHistory(end+1, :) = position(1:2);
         tfHistory(end+1, :) = tfPosRel(1:2);
         timeHistory(end+1) = tNow;
 
-        %% Update plot (throttled)
+        %% Plot update (throttled)
         if mod(size(drHistory,1), 10) == 0
             set(hDR, 'XData', drHistory(:,1), 'YData', drHistory(:,2));
             set(hTF, 'XData', tfHistory(:,1), 'YData', tfHistory(:,2));
@@ -123,10 +185,9 @@ catch ME
     rethrow(ME);
 end
 
-% Cleanup
 clear imuSub tfSub
 
-%% Final comparison plot: position error over time
+%% Final error plot
 if ~isempty(drHistory) && ~isempty(tfHistory)
     err = vecnorm(drHistory - tfHistory, 2, 2);
     figure('Name', 'Position Error', 'NumberTitle', 'off');
@@ -139,7 +200,7 @@ end
 
 disp('Dead reckoning completed.');
 
-%% Callback functions
+%% Callbacks
 function imuCallback(message)
     global imuMsg
     imuMsg = message;
@@ -150,7 +211,7 @@ function tfCallback(message)
     tfMsg = message;
 end
 
-%% Helper: extract [x y yaw] from /tf transform (odom -> base_link)
+%% Helper: extract [x y yaw] from /tf transform
 function pose = extractTfPose(tfMessage)
     pose = [];
     if isempty(tfMessage)
