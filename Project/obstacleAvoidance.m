@@ -82,6 +82,7 @@ if avoid_state.avoid_mode
     end
 end
 
+% Obstacle control
 if avoid_state.avoid_mode
     w_cmd = avoid_state.avoid_turn_gain * avoid_state.turn_dir;
 
