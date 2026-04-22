@@ -1,5 +1,5 @@
 %% Robot Vision: Object Detection & Distance Estimation (ROS2)
-% Exercise 1: Detects red and blue circles using HSV segmentation,
+% Exercise 1: Detects orange and blue circles using HSV segmentation,
 %             morphological operations, and circular Hough transform.
 % Exercise 2: Estimates distance to detected circles using calibrated
 %             focal length (f = 1226.5 px) and known circle size (H = 10 cm).
@@ -25,7 +25,6 @@ controlNode = ros2node('/base_station');
 odomSub = ros2subscriber(controlNode, '/odom', @odomCallback); % odometry topic
 scanSub = ros2subscriber(controlNode, '/scan', @scanCallback, 'Reliability', 'besteffort'); % laser scan topic
 imageSub = ros2subscriber(controlNode, '/camera/image_raw/compressed', @imageCallback); % image topic
-
 % Pause to allow ROS subscriptions to initialize
 pause(0.5);
     
@@ -80,9 +79,11 @@ try
         %% Visualise image
         imageRGB = flip(image, 1); % Flip image vertically (upside down fix)
         imageGray = rgb2gray(imageRGB);
-        centersR = []; radiiR = [];
+        
+        % Omdøbt fra R til O (Orange)
+        centersO = []; radiiO = [];
         centersB = []; radiiB = [];
-
+        
         %% Exercise 1: Object Detection
         % --- A. PREPROCESSING ---
             % stretchlim finds the intensity range covering 98% of pixels,
@@ -90,72 +91,71 @@ try
             % under variable lighting conditions.
             lowHigh = stretchlim(imageRGB, [0.01 0.99]);
             enhancedImage = imadjust(imageRGB, lowHigh, []);
-
             % Gaussian filter (sigma=1) smooths out camera sensor noise
             % to prevent false edges during circle detection.
             smoothImage = imgaussfilt(enhancedImage, 1);
-
             % Convert RGB to HSV because HSV separates color (Hue) from
             % brightness (Value), making color-based segmentation more
             % robust to lighting changes than RGB thresholding.
             hsvImage = rgb2hsv(smoothImage);
-
+            
             % --- B. THRESHOLDING (Color segmentation) ---
             % Saturation > 0.50 filters out gray/white pixels.
             % Value > 0.20 filters out very dark pixels.
             satMin = 0.50; valMin = 0.20;
-
-            % --- RED CIRCLE MASK ---
-            % Red wraps around in HSV: Hue near 0 (<=0.10) or near 1 (>=0.90).
-            BW_red = (hsvImage(:,:,1) >= 0.90 | hsvImage(:,:,1) <= 0.10) & ...
+            
+            % --- ORANGE CIRCLE MASK ---
+            % Orange Hue range i HSV ligger ca. mellem 0.05 og 0.15
+            BW_orange = (hsvImage(:,:,1) >= 0.05 & hsvImage(:,:,1) <= 0.15) & ...
                      (hsvImage(:,:,2) >= satMin) & ...
                      (hsvImage(:,:,3) >= valMin);
-
+                     
             % --- BLUE CIRCLE MASK ---
             % Blue Hue range in HSV is approximately 0.55 to 0.65.
             BW_blue = (hsvImage(:,:,1) >= 0.55 & hsvImage(:,:,1) <= 0.65) & ...
                       (hsvImage(:,:,2) >= satMin) & ...
                       (hsvImage(:,:,3) >= valMin);
-
+                      
             % Morphology: imopen removes small noise blobs (smaller than
             % the disk radius), imclose fills small holes inside the circle.
             % Using a disk structuring element because we are looking for
             % circular shapes.
             se = strel('disk', 5);
-            BW_red_clean = imclose(imopen(BW_red, se), se);
+            BW_orange_clean = imclose(imopen(BW_orange, se), se);
             BW_blue_clean = imclose(imopen(BW_blue, se), se);
-
+            
             % imfindcircles uses Circular Hough Transform (CHT) to detect
             % circles on the binary mask. Radius range [20 200] px covers
             % expected circle sizes at different distances.
             % 'ObjectPolarity','bright' = white circles on black background.
-            [centersR, radiiR] = imfindcircles(BW_red_clean, [20 200], 'ObjectPolarity', 'bright');
-            if ~isempty(centersR)
-                diameterR = 2 * radiiR(1);
-                disp(['Red circle detected! Diameter: ', num2str(diameterR), ' px']);
+            
+            % Find orange cirkler i stedet for røde
+            [centersO, radiiO] = imfindcircles(BW_orange_clean, [20 200], 'ObjectPolarity', 'bright');
+            if ~isempty(centersO)
+                diameterO = 2 * radiiO(1);
+                disp(['Orange circle detected! Diameter: ', num2str(diameterO), ' px']);
             end
-
+            
             [centersB, radiiB] = imfindcircles(BW_blue_clean, [20 200], 'ObjectPolarity', 'bright');
             if ~isempty(centersB)
                 diameterB = 2 * radiiB(1);
                 disp(['Blue circle detected! Diameter: ', num2str(diameterB), ' px']);
             end
         
-        
         visualise = updateImage(visualise, imageGray);
         figure(visualise.figImage);
         hold on;
             
-            % Draw red circles
-            if ~isempty(centersR)
-                % Draw circle outline in red
-                viscircles(centersR(1,:), radiiR(1), 'EdgeColor', 'r', 'LineWidth', 2);
-                % Draw red cross at center
-                plot(centersR(1,1), centersR(1,2), 'r+', 'MarkerSize', 10, 'LineWidth', 2);
+            % Draw orange circles
+            if ~isempty(centersO)
+                % Draw circle outline in orange (RGB: [1 0.5 0])
+                viscircles(centersO(1,:), radiiO(1), 'EdgeColor', [1 0.5 0], 'LineWidth', 2);
+                % Draw orange cross at center
+                plot(centersO(1,1), centersO(1,2), '+', 'Color', [1 0.5 0], 'MarkerSize', 10, 'LineWidth', 2);
                 % Write diameter on image
-                text(centersR(1,1)+10, centersR(1,2), ...
-                     sprintf('Red (D=%.0f px)', 2*radiiR(1)), ...
-                     'Color', 'r', 'FontSize', 12, 'FontWeight', 'bold');
+                text(centersO(1,1)+10, centersO(1,2), ...
+                     sprintf('Orange (D=%.0f px)', 2*radiiO(1)), ...
+                     'Color', [1 0.5 0], 'FontSize', 12, 'FontWeight', 'bold');
             end
             
             % Draw blue circles
@@ -171,7 +171,7 @@ try
             end
             
             hold off; % End overlay drawing
-
+            
         %% Exercise 2: Distance Estimation
         % Using the pinhole camera model: Dp = f * H / D
         %   Dp = circle diameter in pixels (from Exercise 1)
@@ -181,17 +181,16 @@ try
         % Rearranged: D = f * H / Dp
         H = 0.10; % Real circle size in meters (10 cm)
         f = 1226.5;  % Camera focal length in pixels (calibrated from 6 measurements)
-
-        if ~isempty(centersR)
-            distanceR = f * H / (2 * radiiR(1)); % 2*radius = diameter
-            fprintf('Red circle distance: %.2f m\n', distanceR);
+        
+        if ~isempty(centersO)
+            distanceO = f * H / (2 * radiiO(1)); % 2*radius = diameter
+            fprintf('Orange circle distance: %.2f m\n', distanceO);
         end
-
         if ~isempty(centersB)
             distanceB = f * H / (2 * radiiB(1));
             fprintf('Blue circle distance: %.2f m\n', distanceB);
         end
-
+        
         %% PID controller for heading
         angularVelocity = 0.0;
 
@@ -203,7 +202,7 @@ try
         cmdMsg.linear.x = clip(linearVelocity, -0.1, 0.1);
         cmdMsg.angular.z = clip(angularVelocity, -1.0, 1.0);
         % send(cmdPub, cmdMsg);
-
+        
         %% Pause to visualize and delete old plots
         pause(0.1)
 
@@ -212,6 +211,7 @@ try
             ME = MException('NonExeption:EndProgram', 'The program was closed.');
             throw(ME)
         end
+        
 end
         catch ME
     % Stop the robot
@@ -219,13 +219,11 @@ end
     cmdMsg.Linear.x = 0;
     cmdMsg.Angular.z = 0;
     try send(cmdPub, cmdMsg); catch; end
-
     % Close all figures
     close all
     
     % Clean up ROS subscriptions
     clear odomSub scanSub imageSub
-
     % Show the error
     if ~strcmp(ME.identifier, 'NonExeption:EndProgram')
         rethrow(ME)
@@ -236,27 +234,21 @@ end
 function odomCallback(message)
     % Use global variable to store the robot's position and orientation
     global pose poseOffset
-
     % Extract position and orientation data from the ROS message
     pose = message.pose.pose;
-
     if isempty(poseOffset)
         poseOffset = message.pose.pose;
     end
 end
-
 function scanCallback(message)
     % Use global variable to store laser scan data
     global scan
-
     % Save the laser scan message
     scan = message;
 end
-
 function imageCallback(message)
     % Use global variable to store laser scan data
     global image
-
     % Save the laser scan message
     image = rosReadImage(message);
 end
