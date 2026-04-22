@@ -97,9 +97,10 @@ if numel(goal) == 3 && distance_error < controller_state.distance_tol
     end
 end
 
-% Saturate commands
-v_cmd = max(min(v_cmd, controller_state.v_max), -controller_state.v_max);
-w_cmd = max(min(w_cmd, controller_state.w_max), -controller_state.w_max);
+% NOTE (ROBUST FIX): Clipping/saturations removed from here! 
+% Raw unbounded PID values (e.g. v=8.0) are passed to the obstacle avoidance layer
+% so that repulsive forces can be blended mathematically EXACTLY the same as 
+% the original script, and clipping only happens at the very end.
 
 end
 

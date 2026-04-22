@@ -7,7 +7,7 @@ clc;
 
 
 %% Mission Parameters
-goal = [1; -0.2; 0];               % [x; y; theta] or [x; y]
+goal = [0; 0; 180];               % [x; y; theta] or [x; y]
 tolerance = 0.05;                 % Position reached tolerance (m)
 heading_tolerance = 0.08;         % Heading reached tolerance (rad), used if goal has theta
 max_mission_time = 120;           % Mission timeout (s)
@@ -87,6 +87,7 @@ avoid_state = [];       % Empty on first call triggers initialization in obstacl
 
 %% Mission Clock
 mission_start = tic;
+t_prev_loop = 0; % Track loop time for exact dt
 
 %% Main Control Loop
 fprintf('[START] Beginning mission. Driving to goal [%.3f, %.3f]\n', goal(1), goal(2));
@@ -101,6 +102,12 @@ try
     while toc(mission_start) < max_mission_time
         loop_count = loop_count + 1;
         t_elapsed = toc(mission_start);
+        
+        % Extremely accurate, exact dt derivation (matching original loop completely)
+        dt = t_elapsed - t_prev_loop;
+        if dt <= 0; dt = 0.001; end
+        t_prev_loop = t_elapsed;
+        
         now_sec = now * 86400;
 
         if isempty(plotter.fig) || ~isvalid(plotter.fig)
@@ -144,7 +151,7 @@ try
         % Call PID navigation controller
         [v_cmd, w_cmd, controller_state] = navigate(pose, goal, controller_state, dt);
 
-        % Reactive obstacle avoidance layer from LiDAR.
+        % Reactive obstacle avoidance layer from LiDAR + final output clipping
         [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state);
 
         % Publish velocity command to robot
@@ -171,9 +178,8 @@ try
                 t_elapsed, pose(1), pose(2), dist_to_goal, v_cmd, w_cmd, avoid_dbg.avoid_mode, avoid_dbg.front_min);
         end
 
-        % Wait to maintain control rate
+        % Wait to maintain control rate without artificially starving ROS
         drawnow limitrate;
-        pause(dt);
     end
     
     % Stop robot on exit
