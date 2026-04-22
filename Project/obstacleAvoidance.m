@@ -1,6 +1,6 @@
 function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan_msg, avoid_state)
-% obstacleAvoidance Reactive LiDAR safety layer for velocity commands.
-% Applies front-stop and steer-away behavior with hysteresis.
+% obstacleAvoidance Reactive APF (repulsive-force) safety layer.
+% Blends nominal PID commands with LiDAR-derived repulsive forces.
 %
 % INPUTS:
 %   v_in, w_in  : nominal commands from goal-tracking controller
@@ -8,33 +8,15 @@ function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan
 %   avoid_state : persistent struct (pass [] on first call)
 %
 % OUTPUTS:
-%   v_cmd, w_cmd: safe commands after obstacle arbitration
+%   v_cmd, w_cmd: command after APF blending and safety clipping
 %   avoid_state : updated persistent state
-%   debug       : struct with front/left/right minimum ranges and mode flag
+%   debug       : diagnostic values (mins + force components)
 
 if nargin < 4 || isempty(avoid_state)
-    avoid_state.avoid_mode = false;
-    avoid_state.mode_enter_time = -inf;
-    avoid_state.turn_dir = 1;
-
-    % Distances in meters.
-    avoid_state.avoid_start_distance = 0.40;   % Enter avoidance at this distance
-    avoid_state.avoid_clear_distance = 0.80;   % Require this much clearance to exit (wider hysteresis)
-    avoid_state.stop_distance = 0.32;
-    avoid_state.forward_resume_distance = 0.75;
-
-    % Commitment time to avoid ping-pong with global goal controller.
-    avoid_state.min_avoid_hold_sec = 1.2;
-
-    % LiDAR sector limits around forward axis.
-    avoid_state.front_half_angle = deg2rad(35);
-    avoid_state.side_inner_angle = deg2rad(25);
-    avoid_state.side_outer_angle = deg2rad(100);
-
-    % Override commands while avoiding.
-    avoid_state.avoid_linear = 0.05;
-    avoid_state.avoid_turn_gain = 1.2;
-    avoid_state.side_bias_deadband = 0.05;
+    % APF parameters (mirrors original PID-Obstacle_Avoidance approach).
+    avoid_state.beta = 0.5;                 % Repulsive force strength
+    avoid_state.d0 = 0.50;                  % Activation distance (m)
+    avoid_state.front_back_angle = deg2rad(10);
 
     % Valid scan limits.
     avoid_state.min_valid_range = 0.05;
@@ -47,58 +29,43 @@ w_cmd = w_in;
 debug.front_min = inf;
 debug.left_min = inf;
 debug.right_min = inf;
-debug.avoid_mode = avoid_state.avoid_mode;
+debug.repulsive_x = 0.0;
+debug.repulsive_y = 0.0;
+debug.avoid_mode = false;
 
 if isempty(scan_msg)
     return;
 end
 
 [front_min, left_min, right_min] = getScanSectorMinimums(scan_msg, ...
-    avoid_state.front_half_angle, avoid_state.side_inner_angle, avoid_state.side_outer_angle, ...
+    deg2rad(35), deg2rad(25), deg2rad(100), ...
     avoid_state.min_valid_range, avoid_state.max_valid_range);
 
-% Enter avoidance when obstacle is close ahead.
-if front_min < avoid_state.avoid_start_distance
-    if ~avoid_state.avoid_mode
-        side_bias = right_min - left_min;
-        if abs(side_bias) < avoid_state.side_bias_deadband
-            avoid_state.turn_dir = 1;
-        else
-            avoid_state.turn_dir = sign(side_bias);
-        end
-        avoid_state.mode_enter_time = now * 86400;
-    end
-    avoid_state.avoid_mode = true;
+[f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, ...
+    avoid_state.beta, avoid_state.d0, avoid_state.front_back_angle, ...
+    avoid_state.min_valid_range, avoid_state.max_valid_range);
+
+% Break APF symmetry: if obstacle is perfectly in front, forces cancel out
+% and it just rocks back and forth. A tiny sideways nudge breaks the trap.
+if f_rep_x < -0.1 && abs(f_rep_y) < 0.01
+    f_rep_y = 0.3; % Arbitrary turn to escape dead-center minimum
 end
 
-if avoid_state.avoid_mode
-    hold_elapsed = (now * 86400) - avoid_state.mode_enter_time;
+% Match original directly: simply add forces to PID
+v_cmd = v_in + f_rep_x;
+w_cmd = w_in + f_rep_y;
 
-    % Exit only when both conditions are met:
-    % 1) minimum hold time elapsed, and
-    % 2) front is clearly open.
-    if hold_elapsed >= avoid_state.min_avoid_hold_sec && front_min > avoid_state.avoid_clear_distance
-        avoid_state.avoid_mode = false;
-    end
-end
+% Apply the identical clipping used manually in the original script
+v_cmd = max(min(v_cmd, 0.1), -0.1);
+w_cmd = max(min(w_cmd, 1.0), -1.0);
 
-% Obstacle control
-if avoid_state.avoid_mode
-    w_cmd = avoid_state.avoid_turn_gain * avoid_state.turn_dir;
-
-    if front_min < avoid_state.stop_distance
-        v_cmd = 0.0;
-    elseif front_min < avoid_state.forward_resume_distance
-        v_cmd = 0.0;
-    else
-        v_cmd = min(v_in, avoid_state.avoid_linear);
-    end
-end
+debug.avoid_mode = (abs(f_rep_x) > 1e-3) || (abs(f_rep_y) > 1e-3);
+debug.repulsive_x = f_rep_x;
+debug.repulsive_y = f_rep_y;
 
 debug.front_min = front_min;
 debug.left_min = left_min;
 debug.right_min = right_min;
-debug.avoid_mode = avoid_state.avoid_mode;
 
 end
 
@@ -132,5 +99,52 @@ if any(mask)
     m = min(values(mask));
 else
     m = inf;
+end
+end
+
+function [f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, beta, d0, front_back_angle, min_valid_range, max_valid_range)
+scan_obj = rosReadLidarScan(scan_msg);
+ranges = double(scan_obj.Ranges(:));
+angles = double(scan_obj.Angles(:));
+
+valid = isfinite(ranges) & (ranges > min_valid_range) & (ranges < max_valid_range);
+ranges = ranges(valid);
+angles = angles(valid);
+
+if isempty(ranges)
+    f_rep_x = 0.0;
+    f_rep_y = 0.0;
+    return;
+end
+
+% Match original APF behavior: use front and back rays only.
+front_back_mask = (angles >= -front_back_angle & angles <= front_back_angle) | ...
+                  (angles >= pi - front_back_angle | angles <= -pi + front_back_angle);
+
+ranges = ranges(front_back_mask);
+angles = angles(front_back_mask);
+
+if isempty(ranges)
+    f_rep_x = 0.0;
+    f_rep_y = 0.0;
+    return;
+end
+
+f_rep_x = 0.0;
+f_rep_y = 0.0;
+
+for i = 1:numel(ranges)
+    di = ranges(i);
+    if di > d0
+        continue;
+    end
+
+    % APF magnitude used in original script.
+    f_mag = 2 * beta / (di^2) * (1 / di - 1 / d0)^2;
+    a = angles(i);
+
+    % Repulsive force points away from obstacle ray.
+    f_rep_x = f_rep_x - f_mag * cos(a);
+    f_rep_y = f_rep_y - f_mag * sin(a);
 end
 end

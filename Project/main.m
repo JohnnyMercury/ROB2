@@ -7,7 +7,7 @@ clc;
 
 
 %% Mission Parameters
-goal = [0; 0; 0];               % [x; y; theta] or [x; y]
+goal = [1; -0.2; 0];               % [x; y; theta] or [x; y]
 tolerance = 0.05;                 % Position reached tolerance (m)
 heading_tolerance = 0.08;         % Heading reached tolerance (rad), used if goal has theta
 max_mission_time = 120;           % Mission timeout (s)
@@ -85,16 +85,6 @@ plotter = plotter.updatePositionDesired(goal');
 controller_state = [];  % Empty on first call triggers initialization in navigate()
 avoid_state = [];       % Empty on first call triggers initialization in obstacleAvoidance()
 
-%% Stuck-recovery state
-prev_pose = g_pose;
-stuck_start_time = -1;
-recovery_until = -1;
-recovery_turn_dir = 1;
-min_progress_dist = 0.005;      % meters per control cycle threshold
-stuck_confirm_time = 1.2;       % seconds with low progress while commanding forward
-recovery_turn_rate = 0.8;       % rad/s
-recovery_duration = 1.0;        % seconds
-
 %% Mission Clock
 mission_start = tic;
 
@@ -157,29 +147,6 @@ try
         % Reactive obstacle avoidance layer from LiDAR.
         [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state);
 
-        % Detect no-progress while commanding forward motion.
-        delta_pos = hypot(pose(1) - prev_pose(1), pose(2) - prev_pose(2));
-        if v_cmd > 0.08 && delta_pos < min_progress_dist
-            if stuck_start_time < 0
-                stuck_start_time = t_elapsed;
-            end
-        else
-            stuck_start_time = -1;
-        end
-
-        % If stuck long enough, trigger brief recovery spin.
-        if stuck_start_time > 0 && (t_elapsed - stuck_start_time) > stuck_confirm_time && t_elapsed > recovery_until
-            recovery_until = t_elapsed + recovery_duration;
-            recovery_turn_dir = -recovery_turn_dir;
-            stuck_start_time = -1;
-            fprintf('[RECOVERY] Low progress detected. Executing %.1f s turn-in-place.\n', recovery_duration);
-        end
-
-        if t_elapsed < recovery_until
-            v_cmd = 0.0;
-            w_cmd = recovery_turn_dir * recovery_turn_rate;
-        end
-        
         % Publish velocity command to robot
         vel_msg.linear.x = v_cmd;      % Forward velocity (m/s)
         vel_msg.angular.z = w_cmd;     % Rotation velocity (rad/s)
@@ -204,8 +171,6 @@ try
                 t_elapsed, pose(1), pose(2), dist_to_goal, v_cmd, w_cmd, avoid_dbg.avoid_mode, avoid_dbg.front_min);
         end
 
-        prev_pose = pose;
-        
         % Wait to maintain control rate
         drawnow limitrate;
         pause(dt);
