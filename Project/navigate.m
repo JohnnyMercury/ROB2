@@ -34,13 +34,9 @@ if nargin < 3 || isempty(controller_state)
     controller_state.final_heading_tol = 0.08; % Goal heading threshold (rad)
     
     % Saturation limits
-    controller_state.v_max = 0.25;             % Max linear velocity (m/s)
-    controller_state.w_max = 1.5;              % Max angular velocity (rad/s)
+    controller_state.v_max = 0.1;              % Max linear velocity (m/s)
+    controller_state.w_max = 1.0;              % Max angular velocity (rad/s)
     controller_state.integral_max = 1.0;       % Anti-windup threshold
-    
-    % Speed reduction when aligned poorly
-    controller_state.large_angle_thresh = pi / 3;  % 60 degrees
-    controller_state.slow_speed_factor = 0.1;
 end
 
 if numel(goal) ~= 2 && numel(goal) ~= 3
@@ -104,11 +100,6 @@ end
 % Saturate commands
 v_cmd = max(min(v_cmd, controller_state.v_max), -controller_state.v_max);
 w_cmd = max(min(w_cmd, controller_state.w_max), -controller_state.w_max);
-
-% Reduce forward speed if heading error is large (avoid sharp turns)
-if abs(heading_error) > controller_state.large_angle_thresh
-    v_cmd = controller_state.slow_speed_factor * v_cmd;
-end
 
 end
 

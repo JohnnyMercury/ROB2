@@ -2,8 +2,18 @@ clear;
 close all;
 clc;
 
-%% ROS2 TURTLEBOT NAVIGATION - REAL DEPLOYMENT
+%% ROS2 TURTLEBOT NAVIGATION=
 % Subscribes to robot odometry, commands velocity via /cmd_vel, visualizes in real-time.
+
+
+%% Mission Parameters
+goal = [0; 0; 0];               % [x; y; theta] or [x; y]
+tolerance = 0.05;                 % Position reached tolerance (m)
+heading_tolerance = 0.08;         % Heading reached tolerance (rad), used if goal has theta
+max_mission_time = 120;           % Mission timeout (s)
+update_rate_hz = 10;              % Control loop frequency (Hz)
+dt = 1 / update_rate_hz;
+
 
 % Shared callback state
 global g_pose g_pose_received g_scan g_scan_received g_last_odom_time
@@ -55,14 +65,6 @@ if ~g_pose_received
     error('[INIT] No odometry on /odom after %.1f s. Check bringup, network, and ROS_DOMAIN_ID.', wait_odom_timeout);
 end
 fprintf('[INIT] Odometry stream detected.\n');
-
-%% Mission Parameters
-goal = [1; 0; 270];               % [x; y; theta] or [x; y]
-tolerance = 0.05;                 % Position reached tolerance (m)
-heading_tolerance = 0.08;         % Heading reached tolerance (rad), used if goal has theta
-max_mission_time = 120;           % Mission timeout (s)
-update_rate_hz = 10;              % Control loop frequency (Hz)
-dt = 1 / update_rate_hz;
 
 if numel(goal) ~= 2 && numel(goal) ~= 3
     error('Goal must be [x; y] or [x; y; theta].');

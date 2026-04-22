@@ -18,8 +18,8 @@ if nargin < 4 || isempty(avoid_state)
     avoid_state.turn_dir = 1;
 
     % Distances in meters.
-    avoid_state.avoid_start_distance = 0.45;
-    avoid_state.avoid_clear_distance = 0.60;
+    avoid_state.avoid_start_distance = 0.40;   % Enter avoidance at this distance
+    avoid_state.avoid_clear_distance = 0.80;   % Require this much clearance to exit (wider hysteresis)
     avoid_state.stop_distance = 0.32;
     avoid_state.forward_resume_distance = 0.75;
 
@@ -32,8 +32,8 @@ if nargin < 4 || isempty(avoid_state)
     avoid_state.side_outer_angle = deg2rad(100);
 
     % Override commands while avoiding.
-    avoid_state.avoid_linear = 0.02;
-    avoid_state.avoid_turn_gain = 1.3;
+    avoid_state.avoid_linear = 0.05;
+    avoid_state.avoid_turn_gain = 1.2;
     avoid_state.side_bias_deadband = 0.05;
 
     % Valid scan limits.
