@@ -124,7 +124,8 @@ try
         lastScanStamp = scanStamp;
 
         % Step 3: Build lidarScan object from /scan message.
-        [scan, nValid] = lidarScanFromRos(scanMsg, cfg.maxLidarRange, cfg.minValidRange, cfg.maxRangeMargin, cfg.rangeMedianWindow);
+        % Extract scan for SLAM, and separate rangesMap/anglesMap for clearing open space
+        [scan, rangesMap, anglesMap, nValid] = lidarScanFromRos(scanMsg, cfg.maxLidarRange, cfg.minValidRange, cfg.maxRangeMargin, cfg.rangeMedianWindow);
         if nValid < 10
             pause(0.001);
             continue;
@@ -169,8 +170,9 @@ try
 
             % --- IMPROVEMENT: Update Occupancy Map with insertRay ---
             % Ray tracing lowers the occupancy probability along the beam path
-            % and increases it at the hit point. This clears out moved obstacles!
-            insertRay(occMap, currentPose, scan, cfg.maxLidarRange);
+            % We pass rangesMap and anglesMap directly. MATLAB natively processes 
+            % any ranges at maxLidarRange as pure free space, removing the grey blind spot!
+            insertRay(occMap, currentPose, rangesMap, anglesMap, cfg.maxLidarRange);
 
             % Live map refresh on each accepted scan showing the occupancy grid
             cla(mapAx);
@@ -250,7 +252,7 @@ function stampStr = readScanStamp(scanMessage)
     stampStr = sprintf('%d_%d', sec, nanosec);
 end
 
-function [scan, nValid] = lidarScanFromRos(scanMessage, maxRange, minValidRange, maxRangeMargin, medianWindow)
+function [scanSlam, rangesMap, anglesMap, nValid] = lidarScanFromRos(scanMessage, maxRange, minValidRange, maxRangeMargin, medianWindow)
     try
         ranges = double(scanMessage.ranges);
         angleMin = double(scanMessage.angle_min);
@@ -264,30 +266,43 @@ function [scan, nValid] = lidarScanFromRos(scanMessage, maxRange, minValidRange,
     ranges = ranges(:);
     angles = angleMin + (0:numel(ranges)-1)' * angleInc;
 
-    % Remove invalid and max-range/no-return samples before SLAM.
+    % --- 1. Map Raycasting Data (Clear out free space) ---
+    rangesMap = ranges;
+    anglesMap = angles;
+    
+    % Force NaN, Inf, or out-of-range readings to maxRange so insertRay knows
+    % the beam traveled into open space without hitting anything.
+    rangesMap(isnan(rangesMap) | isinf(rangesMap) | rangesMap > maxRange) = maxRange;
+    
+    % Only remove points reflecting off the robot's own chassis so we don't clear the robot's center
+    validMap = rangesMap > minValidRange;
+    rangesMap = rangesMap(validMap);
+    anglesMap = anglesMap(validMap);
+
+    % --- 2. SLAM Alignment Data (Strict filtering) ---
+    % Remove invalid and max-range/no-return samples completely so SLAM ICP isn't confused.
     isFinite = isfinite(ranges);
     isAboveMin = ranges > minValidRange;
     isBelowMax = ranges < (maxRange - maxRangeMargin);
-    keep = isFinite & isAboveMin & isBelowMax;
+    keepSlam = isFinite & isAboveMin & isBelowMax;
 
-    ranges = ranges(keep);
-    angles = angles(keep);
+    rangesSlam = ranges(keepSlam);
+    anglesSlam = angles(keepSlam);
 
-    if isempty(ranges)
+    if isempty(rangesSlam)
         nValid = 0;
-        scan = lidarScan(0.1, 0);
+        scanSlam = lidarScan(0.1, 0);
         return;
     end
 
     % Simple denoising: moving median removes isolated spikes.
     w = max(1, 2 * floor(medianWindow / 2) + 1); % force odd window
-    if numel(ranges) >= w
-        ranges = movmedian(ranges, w);
+    if numel(rangesSlam) >= w
+        rangesSlam = movmedian(rangesSlam, w);
     end
 
-    nValid = numel(ranges);
-
-    scan = lidarScan(ranges, angles);
+    nValid = numel(rangesSlam);
+    scanSlam = lidarScan(rangesSlam, anglesSlam);
 end
 
 function pose = extractOdomPoseFromTf(tfMessage)
