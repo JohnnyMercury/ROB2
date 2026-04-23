@@ -7,9 +7,10 @@ clc;
 
 
 %% Mission Parameters
-goal = [0; 0; 180];               % [x; y; theta] or [x; y]
+goal = [2.2; 2.2];               % [x; y; theta] or [x; y] 
+goal = [0; 0; 0];  
 tolerance = 0.05;                 % Position reached tolerance (m)
-heading_tolerance = 0.08;         % Heading reached tolerance (rad), used if goal has theta
+heading_tolerance = 0.05;         % Heading reached tolerance (rad), used if goal has theta
 max_mission_time = 120;           % Mission timeout (s)
 update_rate_hz = 10;              % Control loop frequency (Hz)
 dt = 1 / update_rate_hz;
@@ -71,10 +72,13 @@ if numel(goal) ~= 2 && numel(goal) ~= 3
 end
 goal = goal(:);
 
-% Accept heading in degrees if user passes large magnitude (e.g., 180).
+% Standard robotics/math heading convention:
+% positive degrees are COUNTER-CLOCKWISE from +x.
 if numel(goal) == 3 && abs(goal(3)) > (2 * pi + 0.1)
-    goal(3) = deg2rad(goal(3));
-    fprintf('[INIT] Interpreting goal heading as degrees. Converted to %.3f rad (%.1f deg).\n', goal(3), rad2deg(goal(3)));
+    goal(3) = wrapToPi(deg2rad(goal(3)));
+    fprintf('[INIT] Interpreting goal heading as CCW degrees. Converted to %.3f rad (%.1f deg).\n', goal(3), rad2deg(goal(3)));
+elseif numel(goal) == 3
+    fprintf('[INIT] Goal heading provided in radians (math CCW frame).\n');
 end
 
 %% Initialize Visualization
@@ -97,6 +101,7 @@ end
 fprintf('[INFO] Close the figure window or stop script execution in MATLAB to end.\n\n');
 
 loop_count = 0;
+final_align_mode = false;
 
 try
     while toc(mission_start) < max_mission_time
@@ -133,6 +138,16 @@ try
         if numel(goal) == 3
             heading_error_goal = wrapToPi(goal(3) - pose(3));
             reached_goal = (dist_to_goal <= tolerance) && (abs(heading_error_goal) <= heading_tolerance);
+
+            % Latch final heading-alignment mode once inside the goal bubble.
+            % This prevents re-entering position-drive mode due small odometry
+            % jitter, which can create loops near the goal.
+            if ~final_align_mode && dist_to_goal <= tolerance
+                final_align_mode = true;
+            elseif final_align_mode && dist_to_goal > max(0.12, 2 * tolerance)
+                % Safety release only if we drift clearly away.
+                final_align_mode = false;
+            end
         else
             reached_goal = (dist_to_goal <= tolerance);
         end
@@ -148,11 +163,23 @@ try
             break;
         end
         
-        % Call PID navigation controller
-        [v_cmd, w_cmd, controller_state] = navigate(pose, goal, controller_state, dt);
+        % Call PID navigation controller, except in latched final heading mode.
+        if numel(goal) == 3 && final_align_mode
+            % Rotate in place to target heading (no translation).
+            v_cmd = 0.0;
+            % Reuse heading proportional gain for consistent turn response.
+            if isempty(controller_state)
+                w_cmd = 2.0 * heading_error_goal;
+            else
+                w_cmd = controller_state.Kp_h * heading_error_goal;
+            end
+        else
+            [v_cmd, w_cmd, controller_state] = PIDnavigate(pose, goal, controller_state, dt);
+        end
 
         % Reactive obstacle avoidance layer from LiDAR + final output clipping
-        [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state);
+        heading_only_mode = (numel(goal) == 3) && final_align_mode && (abs(heading_error_goal) > heading_tolerance);
+        [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, heading_only_mode);
 
         % Publish velocity command to robot
         vel_msg.linear.x = v_cmd;      % Forward velocity (m/s)
@@ -178,8 +205,10 @@ try
                 t_elapsed, pose(1), pose(2), dist_to_goal, v_cmd, w_cmd, avoid_dbg.avoid_mode, avoid_dbg.front_min);
         end
 
-        % Wait to maintain control rate without artificially starving ROS
+        % Wait to maintain configured control rate.
         drawnow limitrate;
+        loop_elapsed = toc(mission_start) - t_elapsed;
+        pause(max(0, (1 / update_rate_hz) - loop_elapsed));
     end
     
     % Stop robot on exit
