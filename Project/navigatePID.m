@@ -1,5 +1,5 @@
-function [v_cmd, w_cmd, controller_state] = PIDnavigate(pose, goal, controller_state, dt)
-% [v_cmd, w_cmd, controller_state] = PIDnavigate(pose, goal, controller_state, dt)
+function [v_cmd, w_cmd, controller_state] = navigatePID(pose, goal, controller_state, dt)
+% [v_cmd, w_cmd, controller_state] = navigatePID(pose, goal, controller_state, dt)
 %
 % PID-based navigation controller for TurtleBot unicycle model.
 % Drives robot from current pose to goal position (2D: x, y), and optionally
