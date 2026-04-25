@@ -23,7 +23,7 @@ function [v_cmd, w_cmd, controller_state] = PIDnavigate(pose, goal, controller_s
 % Initialize controller state on first call
 if nargin < 3 || isempty(controller_state)
     controller_state.Kp_h = 2.0;              % Heading proportional gain
-    controller_state.Kd_h = 0.0;              % Heading derivative gain
+    controller_state.Kd_h = 1.0;              % Heading derivative gain
     controller_state.Kp_p = 8.0;              % Position proportional gain
     controller_state.Ki_p = 0.02;             % Position integral gain
     
