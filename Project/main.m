@@ -139,6 +139,7 @@ avoid_state = [];       % Empty on first call triggers initialization in obstacl
 %% Mission Clock
 mission_start = tic;
 t_prev_loop = 0; % Track loop time for exact dt
+mission_state = 'NAV_TO_B';
 
 %% Main Control Loop
 fprintf('[START] Beginning PRM mission from [%.3f, %.3f] to [%.3f, %.3f]\n', ...
@@ -178,6 +179,93 @@ try
         
         % Read latest pose from callback state
         pose = odomToMapPose(g_pose(:)', odom_ref_pose, map_start_pose);
+
+        % START PÅ STATE MACHINE
+        switch mission_state
+        
+        % STATE 1: Kør fra Start (A) til Område B
+        case 'NAV_TO_B'
+            % Jeres eksisterende waypoint/PID logik her
+            [v_cmd, w_cmd, controller_state] = navigatePID(pose, target_wp, controller_state, dt);
+            [v_cmd, w_cmd, avoid_state, ~] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false);
+            
+            if goal_reached % (Jeres logik fra før, når waypoint_idx > num_waypoints)
+                fprintf('[STATE] Ankommet til område B. Skifter til SEARCH_TARGET.\n');
+                
+                % Stop robotten inden vi skifter state
+                v_cmd = 0; w_cmd = 0;
+                mission_state = 'SEARCH_TARGET';
+            end
+            
+        % ==========================================
+        % STATE 2: Roter og led efter cirkel
+        % ==========================================
+        case 'SEARCH_TARGET'
+            % Drej robotten langsomt rundt om sig selv
+            v_cmd = 0.0;
+            w_cmd = 0.3; % Drej med 0.3 rad/s
+            
+            % Kald en NY funktion til billedbehandling
+            % [circle_detected, pixel_offset] = detectTarget(g_camera_image);
+            
+            circle_detected = false; % Placeholder
+            
+            if circle_detected
+                fprintf('[STATE] Cirkel fundet! Skifter til ALIGN_AND_PHOTO.\n');
+                v_cmd = 0; w_cmd = 0;
+                mission_state = 'ALIGN_AND_PHOTO';
+            end
+            
+        % ==========================================
+        % STATE 3: Placer 1 meter foran og tag billede
+        % ==========================================
+        case 'ALIGN_AND_PHOTO'
+            % Finjuster position baseret på kamera-data og tag billedet
+            % (Her skal I bygge logikken til at holde afstanden på 1m)
+            
+            photo_taken = true; % Placeholder
+            
+            if photo_taken
+                fprintf('[STATE] Billede taget. Skifter til NAV_TO_C.\n');
+                % Generer en NY PRM rute fra nuværende position til Område C
+                % prm_out = navigatePRM(map_input_file, pose(1:2), goal_C_xy, prm_cfg);
+                % path = prm_out.path;
+                % waypoint_idx = 1;
+                
+                mission_state = 'NAV_TO_C';
+            end
+            
+        % ==========================================
+        % STATE 4: Kør til Område C
+        % ==========================================
+        case 'NAV_TO_C'
+             % Genbrug PID/Obstacle logikken fra NAV_TO_B
+             % Følg den nye sti
+             
+             if goal_reached
+                 fprintf('[SUCCESS] Mission fuldført. Robot i område C.\n');
+                 break; % Stop programmet
+             end
+             
+    end % Slut på switch-case
+    
+    % Send v_cmd og w_cmd til robotten (som I gør nu)
+    vel_msg.linear.x = v_cmd;
+    vel_msg.angular.z = w_cmd;
+    send(vel_pub, vel_msg);
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         % Determine current target waypoint and tolerance.
         target_wp = path(waypoint_idx, :);
