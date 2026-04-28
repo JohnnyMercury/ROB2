@@ -1,4 +1,4 @@
-function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan_msg, avoid_state)
+function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan_msg, avoid_state, heading_only_mode)
 % obstacleAvoidance Reactive APF (repulsive-force) safety layer.
 % Blends nominal PID commands with LiDAR-derived repulsive forces.
 %
@@ -12,11 +12,19 @@ function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan
 %   avoid_state : updated persistent state
 %   debug       : diagnostic values (mins + force components)
 
+if nargin < 5 || isempty(heading_only_mode)
+    heading_only_mode = false;
+end
+
 if nargin < 4 || isempty(avoid_state)
     % APF parameters (mirrors original PID-Obstacle_Avoidance approach).
-    avoid_state.beta = 0.5;                 % Repulsive force strength
-    avoid_state.d0 = 0.50;                  % Activation distance (m)
-    avoid_state.front_back_angle = deg2rad(10);
+    avoid_state.beta = 0.3;                 % Repulsive force strength
+    avoid_state.d0 = 0.20;                  % APF activation distance, should not be lower than avoid_state.stop_distance (m)
+    avoid_state.front_back_angle = deg2rad(40);
+
+    % Lightweight angular smoothing for jitter reduction.
+    avoid_state.w_filter_alpha = 0.25;
+    avoid_state.w_prev = 0.0;
 
     % Valid scan limits.
     avoid_state.min_valid_range = 0.05;
@@ -45,21 +53,45 @@ end
     avoid_state.beta, avoid_state.d0, avoid_state.front_back_angle, ...
     avoid_state.min_valid_range, avoid_state.max_valid_range);
 
-% Break APF symmetry: if obstacle is perfectly in front, forces cancel out
-% and it just rocks back and forth. A tiny sideways nudge breaks the trap.
-if f_rep_x < -0.1 && abs(f_rep_y) < 0.01
-    f_rep_y = 0.3; % Arbitrary turn to escape dead-center minimum
+% Break APF symmetry: dead-center obstacles can cancel lateral force.
+if front_min < avoid_state.d0 && abs(f_rep_y) < 0.01
+    if left_min > right_min
+        f_rep_y = 0.25;
+    else
+        f_rep_y = -0.25;
+    end
 end
 
-% Match original directly: simply add forces to PID
-v_cmd = v_in + f_rep_x;
-w_cmd = w_in + f_rep_y;
+% Apply the original APF-style blend directly to the PID commands.
+% Keep the linear repulsive term as braking only, so it cannot force the
+% robot to keep moving when the goal controller has already commanded v = 0.
+front_brake = max(0.0, -f_rep_x);
 
-% Apply the identical clipping used manually in the original script
-v_cmd = max(min(v_cmd, 0.1), -0.1);
+if heading_only_mode
+    % Final heading alignment near goal: rotate in place only.
+    v_cmd = 0.0;
+else
+    v_cmd = v_in - front_brake;
+end
+if heading_only_mode
+    % Ignore APF angular bias in final heading phase.
+    w_cmd = w_in;
+else
+    w_cmd = w_in + f_rep_y;
+end
+
+% Avoid reversing and keep the command bounded.
+v_cmd = max(0.0, v_cmd);
 w_cmd = max(min(w_cmd, 1.0), -1.0);
 
-debug.avoid_mode = (abs(f_rep_x) > 1e-3) || (abs(f_rep_y) > 1e-3);
+alpha = avoid_state.w_filter_alpha;
+w_cmd = (1 - alpha) * avoid_state.w_prev + alpha * w_cmd;
+avoid_state.w_prev = w_cmd;
+
+% Apply the identical clipping used manually in the original script.
+v_cmd = min(v_cmd, 0.1);
+
+debug.avoid_mode = front_min < avoid_state.d0;
 debug.repulsive_x = f_rep_x;
 debug.repulsive_y = f_rep_y;
 

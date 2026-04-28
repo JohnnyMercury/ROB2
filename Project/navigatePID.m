@@ -1,5 +1,5 @@
-function [v_cmd, w_cmd, controller_state] = navigate(pose, goal, controller_state, dt)
-% [v_cmd, w_cmd, controller_state] = navigate(pose, goal, controller_state, dt)
+function [v_cmd, w_cmd, controller_state] = navigatePID(pose, goal, controller_state, dt)
+% [v_cmd, w_cmd, controller_state] = navigatePID(pose, goal, controller_state, dt)
 %
 % PID-based navigation controller for TurtleBot unicycle model.
 % Drives robot from current pose to goal position (2D: x, y), and optionally
@@ -22,20 +22,18 @@ function [v_cmd, w_cmd, controller_state] = navigate(pose, goal, controller_stat
 
 % Initialize controller state on first call
 if nargin < 3 || isempty(controller_state)
-    controller_state.Kp_h = 4.0;              % Heading proportional gain
-    controller_state.Kd_h = 2.0;              % Heading derivative gain
+    controller_state.Kp_h = 2.0;              % Heading proportional gain
+    controller_state.Kd_h = 1.0;              % Heading derivative gain
     controller_state.Kp_p = 8.0;              % Position proportional gain
     controller_state.Ki_p = 0.02;             % Position integral gain
     
     controller_state.heading_error_prev = 0;  % Previous heading error (for derivative)
+    controller_state.heading_derivative_initialized = false;
     controller_state.integral_distance = 0;   % Accumulated distance error
-    controller_state.distance_tol = 0.05;     % Distance threshold (m)
-    controller_state.heading_tol = 0.05;      % Heading threshold (rad)
-    controller_state.final_heading_tol = 0.08; % Goal heading threshold (rad)
+    controller_state.distance_tol = 0.01;     % Distance threshold (m)
+    controller_state.heading_tol = 0.01;      % Heading threshold (rad)
+    controller_state.final_heading_tol = 0.01; % Goal heading threshold (rad)
     
-    % Saturation limits
-    controller_state.v_max = 0.1;              % Max linear velocity (m/s)
-    controller_state.w_max = 1.0;              % Max angular velocity (rad/s)
     controller_state.integral_max = 1.0;       % Anti-windup threshold
 end
 
@@ -60,8 +58,16 @@ end
 % Wrap heading error to [-pi, pi]
 heading_error = wrapToPi(desired_heading - pose(3));
 
-% Compute heading error derivative
-d_heading_error = (heading_error - controller_state.heading_error_prev) / dt;
+% Compute heading error derivative.
+% Suppress derivative kick on first controller cycle by initializing
+% previous error to current error.
+if ~isfield(controller_state, 'heading_derivative_initialized') || ~controller_state.heading_derivative_initialized
+    controller_state.heading_error_prev = heading_error;
+    controller_state.heading_derivative_initialized = true;
+    d_heading_error = 0;
+else
+    d_heading_error = (heading_error - controller_state.heading_error_prev) / dt;
+end
 controller_state.heading_error_prev = heading_error;
 
 % Accumulate distance error for integral term
@@ -97,9 +103,10 @@ if numel(goal) == 3 && distance_error < controller_state.distance_tol
     end
 end
 
-% Saturate commands
-v_cmd = max(min(v_cmd, controller_state.v_max), -controller_state.v_max);
-w_cmd = max(min(w_cmd, controller_state.w_max), -controller_state.w_max);
+% NOTE (ROBUST FIX): Clipping/saturations removed from here! 
+% Raw unbounded PID values (e.g. v=8.0) are passed to the obstacle avoidance layer
+% so that repulsive forces can be blended mathematically EXACTLY the same as 
+% the original script, and clipping only happens at the very end.
 
 end
 
