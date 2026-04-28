@@ -202,6 +202,7 @@ try
         linearVelocity = 0.0;
         angularVelocity = 0.0;
         
+        % Få billedets bredde for at kunne centrere robotten
         imgWidth = size(imageRGB, 2); 
         
         if ~pictureTaken
@@ -259,7 +260,13 @@ try
         cmdMsg = ros2message('geometry_msgs/Twist');
         cmdMsg.linear.x = max(min(linearVelocity, 0.15), -0.15); % Begræns hastighed til max 0.15 m/s
         cmdMsg.angular.z = max(min(angularVelocity, 0.5), -0.5); % Begræns drejehastighed
-        send(cmdPub, cmdMsg);
+        send(cmdPub, cmdMsg); % VIGTIGT: Den her var udkommenteret før, den skal være aktiv!
+
+        %% Publish velocity commands
+        cmdMsg = ros2message('geometry_msgs/Twist');
+        cmdMsg.linear.x = clip(linearVelocity, -0.1, 0.1);
+        cmdMsg.angular.z = clip(angularVelocity, -1.0, 1.0);
+        % send(cmdPub, cmdMsg);
         
         %% Pause to visualize and delete old plots
         pause(0.1)
