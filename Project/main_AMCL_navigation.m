@@ -24,7 +24,7 @@ dt = 1 / update_rate_hz;
 
 % Visualization 
 enable_visualization = true;
-plot_scan_visualization = true;   % Turn on to see the scan matching the map
+plot_scan_visualization = false;  % Disable scan vis (heavy rendering caused loop lag)
 viz_update_stride = 3;            % update plots every N loops
 
 % PRM planner overrides
@@ -132,7 +132,7 @@ if enable_amcl
         % caused dead-reckoning gaps at slow speeds).
         mcl.UpdateThresholds = [0.05, 0.05, 0.05];
         mcl.ResamplingInterval = 1;
-        mcl.ParticleLimits = [500 2000];     % larger pool => more robust convergence
+        mcl.ParticleLimits = [200 1000];     % smaller pool keeps loop ~10 Hz; 2000 was too slow
         mcl.GlobalLocalization = false;
         mcl.InitialPose = map_start_pose;
         % Initial covariance was diag([0.02, 0.02, 0.01]) - this assumes you

@@ -19,7 +19,7 @@ end
 if nargin < 4 || isempty(avoid_state)
     % APF parameters tuned to match TurtleBot3 burger (radius ~0.14 m).
     avoid_state.beta = 0.3;                 % Repulsive force strength
-    avoid_state.d0 = 0.35;                  % APF activation distance (was 0.20, too late to react)
+    avoid_state.d0 = 0.25;                  % APF activation distance (0.35 was too aggressive in corridors)
     avoid_state.front_back_angle = deg2rad(40);
 
     % Angular smoothing. 0.25 was too heavy (slow reaction => overshoot).
@@ -104,8 +104,8 @@ alpha = avoid_state.w_filter_alpha;
 w_cmd = (1 - alpha) * avoid_state.w_prev + alpha * w_cmd;
 avoid_state.w_prev = w_cmd;
 
-% Apply the identical clipping used manually in the original script.
-v_cmd = min(v_cmd, 0.1);
+% Final velocity cap. Raised from 0.1 to 0.15 m/s for less sluggish motion.
+v_cmd = min(v_cmd, 0.15);
 
 debug.avoid_mode = front_min < avoid_state.d0;
 debug.repulsive_x = f_rep_x;
