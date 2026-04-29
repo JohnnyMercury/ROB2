@@ -103,7 +103,7 @@ w_cmd = (1 - alpha) * avoid_state.w_prev + alpha * w_cmd;
 avoid_state.w_prev = w_cmd;
 
 % Apply the identical clipping used manually in the original script.
-v_cmd = min(v_cmd, 0.22);
+v_cmd = min(v_cmd, 0.1);
 
 debug.avoid_mode = front_min < avoid_state.d0;
 debug.repulsive_x = f_rep_x;

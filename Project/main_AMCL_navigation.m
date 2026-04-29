@@ -8,7 +8,7 @@ clc;
 
 %% User Mission Parameters
 map_input_file = 'slam_map_test_20260429_091016.mat';              % '' = latest slam_map_*.mat in Project/Maps
-goal_input_xy = [1.0, 0.5];               % Goal input [x y]
+goal_input_xy = [3.0, 0.5];               % Goal input [x y]
 goal_is_relative_to_start = true;         % true: goal = map_start + goal_input
 
 enable_amcl = true;                       % Enable LiDAR Scan Matching to eliminate Odometry drift
