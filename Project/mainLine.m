@@ -68,28 +68,7 @@ end
 odom_ref_pose = g_pose(:)';
 fprintf('[INIT] Calibration done. Ready.\n');
 
-%% 3. Initialiser AMCL Lokalisering i MATLAB
-fprintf('[INIT] Sætter AMCL lokalisering op...\n');
-
-mapData = load(map_input_file); % Load map from SLAM-file
-mapNames = fieldnames(mapData); % Find occupancyMap object
-occupancy_map = mapData.(mapNames{1}); 
-
-% Create AMCL object
-amcl = monteCarloLocalization;
-amcl.UseLidarScan = true;
-amcl.Map = occupancy_map;
-
-% Start position
-amcl.GlobalLocalization = false; 
-amcl.InitialPose = map_start_pose(:);
-amcl.InitialCovariance = diag([0.05, 0.05, 0.05]);
-
-% Gem den forrige odometri-pose til at udregne forskellen (delta)
-prev_odom_pose = g_pose(:);
-fprintf('[INIT] AMCL klar.\n');
-
-%% 4. Main Control Loop
+%% 3. Main Control Loop
 mission_start = tic;
 t_prev_loop = 0;
 loop_count = 0;
@@ -113,34 +92,6 @@ try
             error('Odometry stream is stale (>1 s). Commanding stop for safety.');
         end
         
-        % --- AMCL LOCALISATION ---
-        % 1. Calculate how much the odometry has changed since the last loop
-        curr_odom_pose = g_pose(:);
-        odom_delta = curr_odom_pose - prev_odom_pose;
-        odom_delta(3) = wrapToPiLocal(odom_delta(3));
-        prev_odom_pose = curr_odom_pose;
-        
-        % 2. Read LiDAR scan
-        if g_scan_received && ~isempty(g_scan)
-            scan_cart = rosReadCartesian(g_scan);
-            if ~isempty(scan_cart)
-                % Convert to lidarScan object as required by AMCL
-                lidar_obj = lidarScan(scan_cart);
-                
-                % 3. Update AMCL with odometry motion and LiDAR
-                [isUpdated, estimatedPose, ~] = amcl(odom_delta, lidar_obj);
-                
-                if isUpdated
-                    % If AMCL has a good guess, we use it as our "true" bag!
-                    pose = estimatedPose(:)';
-                end
-            end
-        else
-            % If we lack LiDAR, we fall back on pure odometry
-            pose = pose + odom_delta'; 
-            pose(3) = wrapToPiLocal(pose(3));
-        end
-
         % ===================
         % STATE MACHINE START
         % ===================
