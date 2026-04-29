@@ -68,102 +68,6 @@ end
 odom_ref_pose = g_pose(:)';
 fprintf('[INIT] Calibration done. Ready.\n');
 
-%% 3. Initialiser AMCL Lokalisering i MATLAB
-fprintf('[INIT] Sætter AMCL lokalisering op...\n');
-
-mapData = load(map_input_file); % Load map from SLAM-file
-mapNames = fieldnames(mapData); 
-
-occupancy_map = [];
-% Robustly search for the map object or ROS OccupancyGrid message in the loaded file
-for i = 1:numel(mapNames)
-    val = mapData.(mapNames{i});
-    if isa(val, 'occupancyMap') || isa(val, 'binaryOccupancyMap')
-        occupancy_map = val;
-        break;
-    elseif isstruct(val)
-        % Check if it's the raw SLAM output shown in the screenshot (scans and poses)
-        if isfield(val, 'scans') && isfield(val, 'poses')
-            fprintf('[INIT] Found raw SLAM data (scans and poses). Building occupancy map...\n');
-            scans = val.scans;
-            poses = val.poses;
-            occupancy_map = occupancyMap(20); % 20 cells/m = 0.05m resolution
-            for k = 1:length(scans)
-                scan = scans{k};
-                if ~isa(scan, 'lidarScan')
-                    scan = lidarScan(scan); % Convert if it's a raw matrix
-                end
-                insertRay(occupancy_map, poses(k,:), scan, 5.0); % Insert with 5m max range
-            end
-            
-            % Save to a new file so navigatePRM can read the built map later!
-            map_input_file = 'slam_map_built_temp.mat';
-            save(map_input_file, 'occupancy_map');
-            fprintf('[INIT] Map built and saved to %s for PRM planner.\n', map_input_file);
-            break;
-            
-        % Check if it's a standard ROS struct with MessageType
-        elseif isfield(val, 'MessageType') && contains(val.MessageType, 'OccupancyGrid')
-            try
-                occupancy_map = rosReadOccupancyGrid(val);
-            catch
-                occupancy_map = readOccupancyGrid(val);
-            end
-            break;
-        % Check if it's a raw struct containing ROS map data without MessageType
-        elseif isfield(val, 'info') && isfield(val, 'data') && isfield(val.info, 'resolution')
-            try
-                occupancy_map = rosReadOccupancyGrid(val);
-            catch
-                % Manual conversion if ROS function fails
-                w = double(val.info.width);
-                h = double(val.info.height);
-                res = double(val.info.resolution);
-                gridData = double(reshape(val.data, [w, h]))';
-                gridData(gridData < 0) = 50; % -1 means unknown, convert to 50%
-                gridData = gridData / 100.0; % Normalize to 0.0 - 1.0
-                occupancy_map = occupancyMap(gridData, 1/res);
-                try
-                    occupancy_map.GridLocationInWorld = [val.info.origin.position.x, val.info.origin.position.y];
-                catch
-                    % Ignore if origin is not formatted correctly
-                end
-            end
-            break;
-        end
-    elseif isnumeric(val) && ismatrix(val) && min(size(val)) > 10
-        % Fallback: It's just a raw 2D numeric matrix saved directly
-        mat = double(val);
-        if max(mat(:)) > 1.0
-            mat = mat / 100.0; % Assume 0-100 probabilities, map to 0-1
-        end
-        % Default to 0.05m resolution (20 cells/meter) if no resolution info found
-        occupancy_map = occupancyMap(mat, 20);
-        break;
-    end
-end
-
-if isempty(occupancy_map)
-    error('[INIT] Could not find a valid occupancyMap or ROS OccupancyGrid message in %s', map_input_file);
-end
-
-% Create AMCL object
-amcl = monteCarloLocalization;
-amcl.UseLidarScan = true;
-
-% AMCL requires a Sensor Model to hold the map
-sensorModel = likelihoodFieldSensorModel;
-sensorModel.Map = occupancy_map;
-amcl.SensorModel = sensorModel;
-
-% Start position
-amcl.GlobalLocalization = false; 
-amcl.InitialPose = map_start_pose(:);
-amcl.InitialCovariance = diag([0.05, 0.05, 0.05]);
-
-% Gem den forrige odometri-pose til at udregne forskellen (delta)
-prev_odom_pose = g_pose(:);
-fprintf('[INIT] AMCL klar.\n');
 
 %% 4. Main Control Loop
 mission_start = tic;
@@ -189,34 +93,6 @@ try
             error('Odometry stream is stale (>1 s). Commanding stop for safety.');
         end
         
-        % --- AMCL LOCALISATION ---
-        % 1. Calculate how much the odometry has changed since the last loop
-        curr_odom_pose = g_pose(:);
-        odom_delta = curr_odom_pose - prev_odom_pose;
-        odom_delta(3) = wrapToPiLocal(odom_delta(3));
-        prev_odom_pose = curr_odom_pose;
-        
-        % 2. Read LiDAR scan
-        if g_scan_received && ~isempty(g_scan)
-            scan_cart = rosReadCartesian(g_scan);
-            if ~isempty(scan_cart)
-                % Convert to lidarScan object as required by AMCL
-                lidar_obj = lidarScan(scan_cart);
-                
-                % 3. Update AMCL with odometry motion and LiDAR
-                [isUpdated, estimatedPose, ~] = amcl(odom_delta, lidar_obj);
-                
-                if isUpdated
-                    % If AMCL has a good guess, we use it as our "true" bag!
-                    pose = estimatedPose(:)';
-                end
-            end
-        else
-            % If we lack LiDAR, we fall back on pure odometry
-            pose = pose + odom_delta'; 
-            pose(3) = wrapToPiLocal(pose(3));
-        end
-
         % ===================
         % STATE MACHINE START
         % ===================
