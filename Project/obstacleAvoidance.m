@@ -45,11 +45,15 @@ if isempty(scan_msg)
     return;
 end
 
-[front_min, left_min, right_min] = getScanSectorMinimums(scan_msg, ...
+scan_obj = rosReadLidarScan(scan_msg);
+ranges = double(scan_obj.Ranges(:));
+angles = double(scan_obj.Angles(:));
+
+[front_min, left_min, right_min] = getScanSectorMinimums(ranges, angles, ...
     deg2rad(35), deg2rad(25), deg2rad(100), ...
     avoid_state.min_valid_range, avoid_state.max_valid_range);
 
-[f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, ...
+[f_rep_x, f_rep_y] = computeRepulsiveForces(ranges, angles, ...
     avoid_state.beta, avoid_state.d0, avoid_state.front_back_angle, ...
     avoid_state.min_valid_range, avoid_state.max_valid_range);
 
@@ -101,11 +105,7 @@ debug.right_min = right_min;
 
 end
 
-function [front_min, left_min, right_min] = getScanSectorMinimums(scan_msg, front_half_angle, side_inner_angle, side_outer_angle, min_valid_range, max_valid_range)
-scan_obj = rosReadLidarScan(scan_msg);
-ranges = double(scan_obj.Ranges(:));
-angles = double(scan_obj.Angles(:));
-
+function [front_min, left_min, right_min] = getScanSectorMinimums(ranges, angles, front_half_angle, side_inner_angle, side_outer_angle, min_valid_range, max_valid_range)
 valid = isfinite(ranges) & (ranges > min_valid_range) & (ranges < max_valid_range);
 ranges = ranges(valid);
 angles = angles(valid);
@@ -134,11 +134,7 @@ else
 end
 end
 
-function [f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, beta, d0, front_back_angle, min_valid_range, max_valid_range)
-scan_obj = rosReadLidarScan(scan_msg);
-ranges = double(scan_obj.Ranges(:));
-angles = double(scan_obj.Angles(:));
-
+function [f_rep_x, f_rep_y] = computeRepulsiveForces(ranges, angles, beta, d0, front_back_angle, min_valid_range, max_valid_range)
 valid = isfinite(ranges) & (ranges > min_valid_range) & (ranges < max_valid_range);
 ranges = ranges(valid);
 angles = angles(valid);
