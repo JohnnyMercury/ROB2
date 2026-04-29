@@ -189,8 +189,7 @@ try
         now_sec = posixtime(datetime('now'));
 
         if enable_visualization
-            if ~isstruct(plotter) || ~isfield(plotter, 'fig') || ...
-               isempty(plotter.fig) || ~isvalid(plotter.fig)
+            if isempty(plotter) || isempty(plotter.fig) || ~isvalid(plotter.fig)
                 fprintf('\n[STOP] Figure closed by user. Stopping robot.\n');
                 break;
             end
