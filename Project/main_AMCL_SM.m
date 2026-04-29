@@ -16,8 +16,8 @@ map_input_file = 'slam_map_test_20260429_091016.mat';  % '' = latest slam_map_*.
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
 
 % FILL THESE IN WITH COORDINATES FOR AREA B AND C
-goal_B = [5.0, 2.0]; % Goal in Area B
-goal_C = [8.0, -1.0]; % Goal in Area C
+goal_B = [3.0, 1.0]; % Goal in Area B
+goal_C = [8.0, 1.0]; % Goal in Area C
 
 % Navigation
 enable_amcl = true;               % Enable LiDAR Scan Matching to eliminate Odometry drift
@@ -196,12 +196,12 @@ try
         end
 
         % Detect stale odometry stream
-        if (now_sec - g_last_odom_time) > 1.0
-            vel_msg.linear.x = 0;
-            vel_msg.angular.z = 0;
-            send(vel_pub, vel_msg);
-            error('Odometry stream is stale (>1 s). Commanding stop for safety.');
-        end
+        % if (now_sec - g_last_odom_time) > 1.0
+        %     vel_msg.linear.x = 0;
+        %     vel_msg.angular.z = 0;
+        %     send(vel_pub, vel_msg);
+        %     error('Odometry stream is stale (>1 s). Commanding stop for safety.');
+        % end
         
         % ----------------------------------------------------
         % 1. LOCALIZATION (Drift-Corrected Pose Tracking)
@@ -259,6 +259,7 @@ try
                 if dist_to_wp <= active_tol
                     waypoint_idx = waypoint_idx + 1;
                     controller_state = [];
+                end
 
                 if dist_to_wp <= active_tol
                     waypoint_idx = waypoint_idx + 1;
@@ -290,7 +291,7 @@ try
                         state = 'ALIGN_AND_PICTURE';
                     end
                 end
-
+       
             case 'ALIGN_AND_PICTURE'
                 % Task: Position exactly 1m in front of target and snap photo
                 if g_image_received && ~isempty(g_image)
