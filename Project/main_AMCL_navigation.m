@@ -8,7 +8,7 @@ clc;
 
 %% User Mission Parameters
 map_input_file = 'slam_map_test_20260429_091016.mat';              % '' = latest slam_map_*.mat in Project/Maps
-goal_input_xy = [7.0, 0.5];               % Goal input [x y]
+goal_input_xy = [1.0, 0.5];               % Goal input [x y]
 goal_is_relative_to_start = true;         % true: goal = map_start + goal_input
 
 enable_amcl = true;                       % Enable LiDAR Scan Matching to eliminate Odometry drift
@@ -26,14 +26,16 @@ dt = 1 / update_rate_hz;
 enable_visualization = true;
 plot_scan_visualization = true;   % Turn on to see the scan matching the map
 viz_update_stride = 3;            % update plots every N loops
+amcl_particle_stride = 6;         % update particle cloud every N loops
+amcl_update_stride = 3;           % run AMCL correction every N loops
 
 % PRM planner overrides
 prm_cfg = struct();
-prm_cfg.numNodes = 350;
-prm_cfg.connectionDistance = 0.55;
+prm_cfg.numNodes = 500;
+prm_cfg.connectionDistance = 1.00;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
-prm_cfg.inflateRadius = 0.08;
+prm_cfg.inflateRadius = 0.20;
 prm_cfg.simplifyEps = 0.08;
 
 
@@ -204,24 +206,30 @@ try
         % Read live Odometry
         odom_pose = g_pose(:)';
         T_O_R = pose2tform2D(odom_pose);
+        ranges = [];
+        angles = [];
+        scan_vis_mask = [];
         
-        % Process Scan Matching dynamically to align Map 
-        if use_amcl && g_scan_received && ~isempty(g_scan)
+        % Process Scan Matching dynamically to align Map
+        if g_scan_received && ~isempty(g_scan)
             try
                 scan_obj = rosReadLidarScan(g_scan);
                 ranges = double(scan_obj.Ranges(:));
                 angles = double(scan_obj.Angles(:));
+                scan_vis_mask = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
                 
-                valid = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
-                if sum(valid) > 20
-                    scan_clean = lidarScan(ranges(valid), angles(valid));
-                    
-                    % Update Particle Filter
-                    [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
-                    if isUpdated
-                        % AMCL provided a correction! Calculate the new Map-to-Odom relationship
-                        T_M_R_mcl = pose2tform2D(estPose);
-                        T_M_O = T_M_R_mcl / T_O_R; 
+                if use_amcl && mod(loop_count, amcl_update_stride) == 0
+                    valid = scan_vis_mask;
+                    if sum(valid) > 20
+                        scan_clean = lidarScan(ranges(valid), angles(valid));
+
+                        % Update Particle Filter
+                        [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
+                        if isUpdated
+                            % AMCL provided a correction! Calculate the new Map-to-Odom relationship
+                            T_M_R_mcl = pose2tform2D(estPose);
+                            T_M_O = T_M_R_mcl / T_O_R;
+                        end
                     end
                 end
             catch
@@ -270,7 +278,8 @@ try
         [v_cmd, w_cmd, controller_state] = navigatePID(pose, target_wp(:), controller_state, dt);
 
         % Reactive obstacle avoidance 
-        [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false);
+        scan_cache = struct('ranges', ranges, 'angles', angles);
+        [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false, scan_cache);
 
         % Publish
         vel_msg.linear.x = v_cmd;      
@@ -283,24 +292,23 @@ try
         if enable_visualization && mod(loop_count, viz_update_stride) == 0
             plotter = plotter.updatePose(pose(1:2)', pose(3));
 
-            if plot_scan_visualization && g_scan_received && ~isempty(g_scan)
-                cart = rosReadCartesian(g_scan);
-                if ~isempty(cart)
+            if plot_scan_visualization && g_scan_received && ~isempty(g_scan) && any(scan_vis_mask)
+                    cart = [ranges(scan_vis_mask) .* cos(angles(scan_vis_mask)), ...
+                            ranges(scan_vis_mask) .* sin(angles(scan_vis_mask))];
                     R = [cos(pose(3)), -sin(pose(3)); sin(pose(3)), cos(pose(3))];
                     cart_world = cart * R' + pose(1:2)';
                     plotter = plotter.updateScan(cart_world);
-                end
             end
             
             % Draw AMCL Cloud to verify drift correction convergence
-            if use_amcl
+            if use_amcl && mod(loop_count, amcl_particle_stride) == 0
                 try
                     plotter = plotter.updateParticles(mcl.Particles);
                 catch
                 end
             end
             
-            drawnow limitrate;
+            drawnow limitrate nocallbacks;
         end
         
         if mod(loop_count, 10) == 0

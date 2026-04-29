@@ -1,4 +1,4 @@
-function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan_msg, avoid_state, heading_only_mode)
+function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan_msg, avoid_state, heading_only_mode, scan_cache)
 % obstacleAvoidance Reactive APF (repulsive-force) safety layer.
 % Blends nominal PID commands with LiDAR-derived repulsive forces.
 %
@@ -14,6 +14,10 @@ function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan
 
 if nargin < 5 || isempty(heading_only_mode)
     heading_only_mode = false;
+end
+
+if nargin < 6
+    scan_cache = [];
 end
 
 if nargin < 4 || isempty(avoid_state)
@@ -45,11 +49,21 @@ if isempty(scan_msg)
     return;
 end
 
-[front_min, left_min, right_min] = getScanSectorMinimums(scan_msg, ...
+if isstruct(scan_cache) && isfield(scan_cache, 'ranges') && isfield(scan_cache, 'angles') && ...
+        ~isempty(scan_cache.ranges) && ~isempty(scan_cache.angles)
+    ranges = double(scan_cache.ranges(:));
+    angles = double(scan_cache.angles(:));
+else
+    scan_obj = rosReadLidarScan(scan_msg);
+    ranges = double(scan_obj.Ranges(:));
+    angles = double(scan_obj.Angles(:));
+end
+
+[front_min, left_min, right_min] = getScanSectorMinimums(ranges, angles, ...
     deg2rad(35), deg2rad(25), deg2rad(100), ...
     avoid_state.min_valid_range, avoid_state.max_valid_range);
 
-[f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, ...
+[f_rep_x, f_rep_y] = computeRepulsiveForces(ranges, angles, ...
     avoid_state.beta, avoid_state.d0, avoid_state.front_back_angle, ...
     avoid_state.min_valid_range, avoid_state.max_valid_range);
 
@@ -89,7 +103,7 @@ w_cmd = (1 - alpha) * avoid_state.w_prev + alpha * w_cmd;
 avoid_state.w_prev = w_cmd;
 
 % Apply the identical clipping used manually in the original script.
-v_cmd = min(v_cmd, 0.1);
+v_cmd = min(v_cmd, 0.22);
 
 debug.avoid_mode = front_min < avoid_state.d0;
 debug.repulsive_x = f_rep_x;
@@ -101,11 +115,7 @@ debug.right_min = right_min;
 
 end
 
-function [front_min, left_min, right_min] = getScanSectorMinimums(scan_msg, front_half_angle, side_inner_angle, side_outer_angle, min_valid_range, max_valid_range)
-scan_obj = rosReadLidarScan(scan_msg);
-ranges = double(scan_obj.Ranges(:));
-angles = double(scan_obj.Angles(:));
-
+function [front_min, left_min, right_min] = getScanSectorMinimums(ranges, angles, front_half_angle, side_inner_angle, side_outer_angle, min_valid_range, max_valid_range)
 valid = isfinite(ranges) & (ranges > min_valid_range) & (ranges < max_valid_range);
 ranges = ranges(valid);
 angles = angles(valid);
@@ -134,11 +144,7 @@ else
 end
 end
 
-function [f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, beta, d0, front_back_angle, min_valid_range, max_valid_range)
-scan_obj = rosReadLidarScan(scan_msg);
-ranges = double(scan_obj.Ranges(:));
-angles = double(scan_obj.Angles(:));
-
+function [f_rep_x, f_rep_y] = computeRepulsiveForces(ranges, angles, beta, d0, front_back_angle, min_valid_range, max_valid_range)
 valid = isfinite(ranges) & (ranges > min_valid_range) & (ranges < max_valid_range);
 ranges = ranges(valid);
 angles = angles(valid);

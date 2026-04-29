@@ -247,7 +247,7 @@ try
 
         % Wait to maintain configured control rate.
         if enable_visualization && mod(loop_count, viz_update_stride) == 0
-            drawnow limitrate;
+            drawnow limitrate nocallbacks;
         end
         loop_elapsed = toc(mission_start) - t_elapsed;
         pause(max(0, (1 / update_rate_hz) - loop_elapsed));
