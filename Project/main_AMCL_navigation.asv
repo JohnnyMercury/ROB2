@@ -33,7 +33,7 @@ prm_cfg.numNodes = 500;
 prm_cfg.connectionDistance = 1.00;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
-prm_cfg.inflateRadius = 0.20;
+prm_cfg.inflateRadius = 0.25;
 prm_cfg.simplifyEps = 0.08;
 
 
