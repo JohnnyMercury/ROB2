@@ -27,6 +27,7 @@ enable_visualization = true;
 plot_scan_visualization = true;   % Turn on to see the scan matching the map
 viz_update_stride = 3;            % update plots every N loops
 amcl_particle_stride = 6;         % update particle cloud every N loops
+amcl_update_stride = 3;           % run AMCL correction every N loops
 
 % PRM planner overrides
 prm_cfg = struct();
@@ -217,19 +218,19 @@ try
                 angles = double(scan_obj.Angles(:));
                 scan_vis_mask = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
                 
-                if use_amcl
-                valid = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
-                if sum(valid) > 20
-                    scan_clean = lidarScan(ranges(valid), angles(valid));
-                    
-                    % Update Particle Filter
-                    [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
-                    if isUpdated
-                        % AMCL provided a correction! Calculate the new Map-to-Odom relationship
-                        T_M_R_mcl = pose2tform2D(estPose);
-                        T_M_O = T_M_R_mcl / T_O_R; 
+                if use_amcl && mod(loop_count, amcl_update_stride) == 0
+                    valid = scan_vis_mask;
+                    if sum(valid) > 20
+                        scan_clean = lidarScan(ranges(valid), angles(valid));
+
+                        % Update Particle Filter
+                        [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
+                        if isUpdated
+                            % AMCL provided a correction! Calculate the new Map-to-Odom relationship
+                            T_M_R_mcl = pose2tform2D(estPose);
+                            T_M_O = T_M_R_mcl / T_O_R;
+                        end
                     end
-                end
                 end
             catch
                 % Silently ignore bad frames to keep control loop running uninterrupted
@@ -277,7 +278,8 @@ try
         [v_cmd, w_cmd, controller_state] = navigatePID(pose, target_wp(:), controller_state, dt);
 
         % Reactive obstacle avoidance 
-        [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false);
+        scan_cache = struct('ranges', ranges, 'angles', angles);
+        [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false, scan_cache);
 
         % Publish
         vel_msg.linear.x = v_cmd;      

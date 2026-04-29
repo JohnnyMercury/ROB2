@@ -1,4 +1,4 @@
-function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan_msg, avoid_state, heading_only_mode)
+function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan_msg, avoid_state, heading_only_mode, scan_cache)
 % obstacleAvoidance Reactive APF (repulsive-force) safety layer.
 % Blends nominal PID commands with LiDAR-derived repulsive forces.
 %
@@ -14,6 +14,10 @@ function [v_cmd, w_cmd, avoid_state, debug] = obstacleAvoidance(v_in, w_in, scan
 
 if nargin < 5 || isempty(heading_only_mode)
     heading_only_mode = false;
+end
+
+if nargin < 6
+    scan_cache = [];
 end
 
 if nargin < 4 || isempty(avoid_state)
@@ -45,9 +49,15 @@ if isempty(scan_msg)
     return;
 end
 
-scan_obj = rosReadLidarScan(scan_msg);
-ranges = double(scan_obj.Ranges(:));
-angles = double(scan_obj.Angles(:));
+if isstruct(scan_cache) && isfield(scan_cache, 'ranges') && isfield(scan_cache, 'angles') && ...
+        ~isempty(scan_cache.ranges) && ~isempty(scan_cache.angles)
+    ranges = double(scan_cache.ranges(:));
+    angles = double(scan_cache.angles(:));
+else
+    scan_obj = rosReadLidarScan(scan_msg);
+    ranges = double(scan_obj.Ranges(:));
+    angles = double(scan_obj.Angles(:));
+end
 
 [front_min, left_min, right_min] = getScanSectorMinimums(ranges, angles, ...
     deg2rad(35), deg2rad(25), deg2rad(100), ...
