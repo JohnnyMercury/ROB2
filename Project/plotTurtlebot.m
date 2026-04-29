@@ -20,6 +20,7 @@ classdef plotTurtlebot
         h_axisZ
         h_cart
         h_posidion_desired
+        h_particles % Handle for AMCL particles
     end
 
     methods
@@ -143,6 +144,22 @@ classdef plotTurtlebot
             end
 
             obj = maybeExpandAxes(obj, [], cart);
+        end
+        
+        function obj = updateParticles(obj, particles)
+            % Visualizes the AMCL probability distribution cloud
+            obj = ensureAxes(obj);
+            if isempty(particles)
+                return;
+            end
+
+            if isempty(obj.h_particles) || ~isvalid(obj.h_particles)
+                obj.h_particles = scatter(obj.h_ax, particles(:,1), particles(:,2), 6, [0.4660 0.6740 0.1880], 'filled', 'MarkerFaceAlpha', 0.5);
+                % Keep particles below the robot graphics
+                uistack(obj.h_particles, 'bottom'); 
+            else
+                set(obj.h_particles, 'XData', particles(:,1), 'YData', particles(:,2));
+            end
         end
 
         function obj = setupFigure(obj)

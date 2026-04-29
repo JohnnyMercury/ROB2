@@ -11,7 +11,7 @@ close all;
 cfg.mapsFolder = fullfile(fileparts(mfilename('fullpath')), 'Maps');
 
 % Set input session file manually, or leave empty to auto-pick latest.
-cfg.inputSessionFile = 'slam_session_test_20260428_145703.mat';
+cfg.inputSessionFile = 'slam_session_test_20260429_090926.mat';
 
 cfg.outputPrefix = 'slam_map_test_';
 cfg.maxLidarRange = 3.5;

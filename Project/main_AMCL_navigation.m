@@ -2,43 +2,40 @@ clear;
 close all;
 clc;
 
-%% ROS2 TURTLEBOT NAVIGATION (PRM + AMCL ORCHESTRATOR)
-% Loads a built SLAM map, localizes using AMCL (Particle Filter), 
-% plans PRM path, and tracks waypoints while continuously correcting drift.
+%% ROS2 TURTLEBOT NAVIGATION (PRM ORCHESTRATOR)
+% Loads a built SLAM map, plans PRM path, then tracks waypoints using PID
+% plus reactive obstacle avoidance, now backed by AMCL Drift Correction.
 
 %% User Mission Parameters
-map_input_file = 'slam_map_test_20260428_150643.mat';                      % '' = latest slam_map_*.mat in Project/Maps
-goal_input_xy = [2.0, 1.5];               % Goal input [x y]
+map_input_file = 'slam_map_test_20260429_091016.mat';              % '' = latest slam_map_*.mat in Project/Maps
+goal_input_xy = [7.0, 0.5];               % Goal input [x y]
+goal_is_relative_to_start = true;         % true: goal = map_start + goal_input
 
-% With AMCL, you usually want goals to be absolute map coordinates.
-goal_is_relative_to_start = false;        % false: goal_input_xy is the exact map coordinate
+enable_amcl = true;                       % Enable LiDAR Scan Matching to eliminate Odometry drift
 
-% AMCL Initialization Guess
-% Place the robot within ~2 meters of this guess, orientation doesn't matter.
-map_start_pose = [0, 0, 0.0];             % Guess [x y yaw] in map frame
-amcl_search_radius = 2.0;                 % meters of uncertainty
-amcl_search_yaw = pi;                     % radians of uncertainty (pi = 180 deg)
+map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
 
-waypoint_tolerance = 0.15;        % Intermediate waypoint tolerance (m)
+waypoint_tolerance = 0.12;        % Intermediate waypoint tolerance (m)
 final_tolerance = 0.08;           % Final waypoint tolerance (m)
 
 max_mission_time = 180;           % Mission timeout (s)
 update_rate_hz = 10;              % Control loop frequency (Hz)
 dt = 1 / update_rate_hz;
 
-% Visualization
+% Visualization 
 enable_visualization = true;
-plot_scan_visualization = true;   % Changed to true to show actual LiDAR points (blue)
-viz_update_stride = 2;            % update plots every N loops
+plot_scan_visualization = true;   % Turn on to see the scan matching the map
+viz_update_stride = 3;            % update plots every N loops
 
-% PRM Planner Settings
+% PRM planner overrides
 prm_cfg = struct();
 prm_cfg.numNodes = 350;
 prm_cfg.connectionDistance = 0.55;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
-prm_cfg.inflateRadius = 0.12;     % Slightly inflated for safer paths
+prm_cfg.inflateRadius = 0.08;
 prm_cfg.simplifyEps = 0.08;
+
 
 % Shared callback state
 global g_pose g_pose_received g_scan g_scan_received g_last_odom_time
@@ -50,11 +47,14 @@ g_last_odom_time = -inf;
 
 %% ROS2 Initialization
 fprintf('[INIT] Starting ROS2 node and topic connections...\n');
+
 if isempty(getenv('ROS_DOMAIN_ID'))
     setenv('ROS_DOMAIN_ID', '30');
 end
 
 cmd_topic = "/cmd_vel";
+
+% Create node and topics
 node = ros2node("turtlebot_navigator");
 odom_sub = ros2subscriber(node, "/odom", @odomCallback);
 scan_sub = ros2subscriber(node, "/scan", @scanCallback, 'Reliability', 'besteffort');
@@ -70,154 +70,104 @@ while ~g_pose_received && toc(t_wait) < wait_odom_timeout
     pause(0.05);
 end
 if ~g_pose_received
-    error('[INIT] No odometry on /odom after %.1f s.', wait_odom_timeout);
+    error('[INIT] No odometry on /odom after %.1f s. Check bringup, network, and ROS_DOMAIN_ID.', wait_odom_timeout);
 end
+fprintf('[INIT] Odometry stream detected.\n');
 
-%% Load Map for AMCL Localization
-maps_dir = fullfile(fileparts(mfilename('fullpath')), 'Maps');
-if isempty(map_input_file)
-    files = dir(fullfile(maps_dir, 'slam_map_*.mat'));
-    if isempty(files), error('No maps found.'); end
-    [~, idx] = max([files.datenum]);
-    map_file_path = fullfile(files(idx).folder, files(idx).name);
-else
-    map_file_path = fullfile(maps_dir, map_input_file);
-    if ~isfile(map_file_path), map_file_path = map_input_file; end
+if numel(goal_input_xy) ~= 2
+    error('goal_input_xy must be [x y].');
 end
+goal_input_xy = double(goal_input_xy(:)');
+map_start_pose = double(map_start_pose(:)');
 
-fprintf('[INIT] Loading map: %s\n', map_file_path);
-map_data = load(map_file_path);
-
-% Use probabilistic map for best AMCL results, fallback to binary
-if isfield(map_data.output, 'mapCleanProb') && ~isempty(map_data.output.mapCleanProb)
-    amcl_map = occupancyMap(map_data.output.mapCleanProb);
-else
-    occ = occupancyMatrix(map_data.output.rawOccMap);
-    amcl_map = occupancyMap(occ, map_data.output.rawOccMap.Resolution);
-end
-
-%% Configure AMCL
-amcl = monteCarloLocalization;
-amcl.UseLidarScan = true;
-
-% Setup Sensor Model (Robust cross-version method)
-sm = likelihoodFieldSensorModel();
-sm.Map = amcl_map;
-sm.SensorLimits = [0.1 3.5];
-amcl.SensorModel = sm;
-
-% Setup Motion Model (Robust cross-version method)
-% TurtleBot diff-drive noise: [rot1 rot2 trans1 trans2]
-mm = odometryMotionModel();
-mm.Noise = [0.05 0.05 0.05 0.05]; 
-amcl.MotionModel = mm;
-
-% Trigger update every [distance(m), angle(rad), time(s)]
-amcl.UpdateThresholds = [0.05, 0.05, 0.2]; 
-amcl.ParticleLimits = [100 1500];
-
-amcl.GlobalLocalization = false;
-amcl.InitialPose = map_start_pose;
-amcl.InitialCovariance = diag([amcl_search_radius, amcl_search_radius, amcl_search_yaw].^2);
-
-%% Spin to Localize (AMCL Convergence)
-fprintf('\n[LOC] AMCL Initialization started.\n');
-fprintf('[LOC] Robot will drive in a circle to scan surroundings and locate itself.\n');
-
-if enable_visualization
-    plotter = plotTurtlebot('TurtleBot AMCL Navigation', [-2, 3], [-2, 3]);
-    
-    % The magenta dots are the AMCL particles (robot pose guesses), NOT the LiDAR data!
-    h_particles = scatter(plotter.h_ax, 0, 0, 8, 'magenta', 'filled', 'MarkerFaceAlpha', 0.5);
-end
-
-localized = false;
-last_odom = g_pose(:)';
-estPose = map_start_pose;
-t_loc = tic;
-
-while ~localized && toc(t_loc) < 25
-    % Command a circular path (forward + turning)
-    vel_msg.linear.x = 0.15;
-    vel_msg.angular.z = 0.4;
-    send(vel_pub, vel_msg);
-    
-    if g_scan_received && ~isempty(g_scan)
-        scan_obj = rosReadLidarScan(g_scan);
-        curr_odom = g_pose(:)';
-        odom_delta = getOdomDelta(last_odom, curr_odom);
-        last_odom = curr_odom;
-        
-        [isUpdated, pose, cov] = amcl(odom_delta, scan_obj);
-        if isUpdated
-            estPose = pose;
-            [parts, ~] = amcl.getParticles();
-            
-            if enable_visualization
-                set(h_particles, 'XData', parts(:,1), 'YData', parts(:,2));
-                plotter = plotter.updatePose(estPose(1:2)', estPose(3));
-                
-                % Show actual LiDAR points (blue) during initialization spin too!
-                if plot_scan_visualization
-                    cart = rosReadCartesian(scan_obj);
-                    if ~isempty(cart)
-                        R = [cos(estPose(3)), -sin(estPose(3)); sin(estPose(3)), cos(estPose(3))];
-                        cart_world = cart * R' + estPose(1:2)';
-                        plotter = plotter.updateScan(cart_world);
-                    end
-                end
-                
-                drawnow limitrate;
-            end
-            
-            % Check if particles have clustered (converged)
-            pos_std = sqrt(max(eig(cov(1:2, 1:2))));
-            yaw_std = sqrt(cov(3,3));
-            
-            if pos_std < 0.15 && yaw_std < 0.15
-                localized = true;
-                fprintf('[LOC] AMCL Converged! (pos_std=%.2fm, yaw_std=%.2frad)\n', pos_std, yaw_std);
-            end
-        end
-    end
-    pause(0.05);
-end
-
-% Stop moving
-vel_msg.linear.x = 0;
-vel_msg.angular.z = 0;
-send(vel_pub, vel_msg);
-pause(0.5);
-
-if ~localized
-    fprintf('[LOC] Warning: AMCL did not fully converge within timeout. Proceeding with best guess.\n');
-end
-fprintf('[LOC] Current Map Pose: [%.3f, %.3f, %.3f]\n\n', estPose(1), estPose(2), estPose(3));
-
-start_xy = estPose(1:2);
 if goal_is_relative_to_start
-    goal_xy = start_xy + goal_input_xy(:)';
+    goal_xy = map_start_pose(1:2) + goal_input_xy;
 else
-    goal_xy = goal_input_xy(:)';
+    goal_xy = goal_input_xy;
 end
 
-%% PRM Planning
-fprintf('[PLAN] Planning path from [%.2f, %.2f] to [%.2f, %.2f]\n', start_xy(1), start_xy(2), goal_xy(1), goal_xy(2));
-prm_out = navigatePRM(map_file_path, start_xy, goal_xy, prm_cfg);
+% Snapshot odometry reference at startup
+odom_ref_pose = g_pose(:)';
+start_xy = map_start_pose(1:2);
+fprintf('[INIT] Startup odom reference: [%.3f, %.3f, %.3f]\n', odom_ref_pose(1), odom_ref_pose(2), odom_ref_pose(3));
+
+%% PRM Planning from built SLAM map
+prm_out = navigatePRM(map_input_file, start_xy, goal_xy, prm_cfg);
 path = prm_out.path;
 num_waypoints = size(path, 1);
 
+if num_waypoints < 2
+    error('PRM path has too few waypoints.');
+end
+
+fprintf('[PLAN] Map: %s\n', prm_out.mapFilePath);
+fprintf('[PLAN] Waypoints: %d | Goal: [%.3f, %.3f]\n', num_waypoints, goal_xy(1), goal_xy(2));
+
+%% AMCL Localization Initialization
+use_amcl = false;
+if enable_amcl
+    fprintf('[INIT] Setting up AMCL for drift correction...\n');
+    try
+        % Load uninflated map for localization matching
+        S_map = load(prm_out.mapFilePath);
+        if isfield(S_map.output, 'mapCleanProb')
+            locMap = S_map.output.mapCleanProb;
+        else
+            locMap = S_map.output.rawOccMap;
+        end
+        
+        mcl = monteCarloLocalization;
+        mcl.UseLidarScan = true;
+        
+        odomModel = odometryMotionModel;
+        odomModel.Noise = [0.1 0.1 0.1 0.1];
+        mcl.MotionModel = odomModel;
+        
+        sensorModel = likelihoodFieldSensorModel;
+        sensorModel.SensorLimits = [0.08 3.5];
+        sensorModel.Map = locMap;
+        mcl.SensorModel = sensorModel;
+        
+        % Only run heavy update math when moving to save loop time (10cm or ~5.7 deg)
+        mcl.UpdateThresholds = [0.10, 0.10, 0.10]; 
+        mcl.ResamplingInterval = 1;
+        mcl.ParticleLimits = [200 1000];
+        mcl.GlobalLocalization = false;
+        mcl.InitialPose = map_start_pose;
+        mcl.InitialCovariance = diag([0.02, 0.02, 0.01]);
+        
+        use_amcl = true;
+        fprintf('[INIT] AMCL initialized successfully.\n');
+    catch ME
+        fprintf('[WARN] Failed to initialize AMCL. Using pure odometry. Error: %s\n', ME.message);
+    end
+end
+
+% Set up persistent transforms to track the drift. 
+% T_M_O stores the rigid transform to map raw Odometry frame to the True Map frame.
+T_M_R_init = pose2tform2D(map_start_pose);
+T_O_R_init = pose2tform2D(odom_ref_pose);
+T_M_O = T_M_R_init / T_O_R_init; % Matrix Right Division (T_M_R_init * inv(T_O_R_init))
+
+
+%% Initialize Visualization
+plotter = [];
 if enable_visualization
+    plotter = plotTurtlebot('TurtleBot Real Navigation', [-0.5, 1.5], [-0.5, 1.5]);
     plotter = plotter.updatePositionDesired(path(1, :));
 end
 
-%% Controller State
-controller_state = [];
-avoid_state = [];
+%% Initialize Controllers
+controller_state = [];  
+avoid_state = [];       
 
-%% Main Control Loop
+%% Mission Clock
 mission_start = tic;
 t_prev_loop = 0;
+
+%% Main Control Loop
+fprintf('[START] Beginning PRM mission from [%.3f, %.3f] to [%.3f, %.3f]\n', start_xy(1), start_xy(2), goal_xy(1), goal_xy(2));
+
 loop_count = 0;
 waypoint_idx = 1;
 goal_reached = false;
@@ -231,78 +181,108 @@ try
         if dt <= 0; dt = 0.001; end
         t_prev_loop = t_elapsed;
         
-        if enable_visualization && (~isvalid(plotter.fig) || isempty(plotter.h_ax))
-            fprintf('\n[STOP] Figure closed by user.\n');
-            break;
+        now_sec = now * 86400;
+
+        if enable_visualization
+            if isempty(plotter.fig) || ~isvalid(plotter.fig)
+                fprintf('\n[STOP] Figure closed by user. Stopping robot.\n');
+                break;
+            end
         end
 
-        % Detect stale odometry
-        if ((now * 86400) - g_last_odom_time) > 1.0
-            vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
-            error('Odometry stream is stale (>1 s).');
+        % Detect stale odometry stream
+        if (now_sec - g_last_odom_time) > 1.0
+            vel_msg.linear.x = 0;
+            vel_msg.angular.z = 0;
+            send(vel_pub, vel_msg);
+            error('Odometry stream is stale (>1 s). Commanding stop for safety.');
         end
         
-        % -------------------------------------------------------------
-        % LOCALIZATION UPDATE (Drift Correction)
-        % -------------------------------------------------------------
-        curr_odom = g_pose(:)';
-        odom_delta = getOdomDelta(last_odom, curr_odom);
-        last_odom = curr_odom;
+        % ----------------------------------------------------
+        % 1. LOCALIZATION (Drift-Corrected Pose Tracking)
+        % ----------------------------------------------------
+        % Read live Odometry
+        odom_pose = g_pose(:)';
+        T_O_R = pose2tform2D(odom_pose);
         
-        if g_scan_received && ~isempty(g_scan)
-            scan_obj = rosReadLidarScan(g_scan);
-            [isUpdated, amclPose, ~] = amcl(odom_delta, scan_obj);
-            if isUpdated
-                estPose = amclPose;
-                if enable_visualization && mod(loop_count, viz_update_stride) == 0
-                    [parts, ~] = amcl.getParticles();
-                    set(h_particles, 'XData', parts(:,1), 'YData', parts(:,2));
+        % Process Scan Matching dynamically to align Map 
+        if use_amcl && g_scan_received && ~isempty(g_scan)
+            try
+                scan_obj = rosReadLidarScan(g_scan);
+                ranges = double(scan_obj.Ranges(:));
+                angles = double(scan_obj.Angles(:));
+                
+                valid = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
+                if sum(valid) > 20
+                    scan_clean = lidarScan(ranges(valid), angles(valid));
+                    
+                    % Update Particle Filter
+                    [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
+                    if isUpdated
+                        % AMCL provided a correction! Calculate the new Map-to-Odom relationship
+                        T_M_R_mcl = pose2tform2D(estPose);
+                        T_M_O = T_M_R_mcl / T_O_R; 
+                    end
                 end
-            else
-                estPose = integrateOdom(estPose, odom_delta);
+            catch
+                % Silently ignore bad frames to keep control loop running uninterrupted
             end
-        else
-            estPose = integrateOdom(estPose, odom_delta);
         end
         
-        pose = estPose; % This is our new, drift-free robot pose
-        
-        % -------------------------------------------------------------
-        % WAYPOINT TRACKING
-        % -------------------------------------------------------------
+        % Calculate smoothed robot pose from drift transform + live odometry 
+        % This guarantees the loop operates at 10Hz smoothly even when MCL pauses
+        T_M_R = T_M_O * T_O_R;
+        pose = tform2pose2D(T_M_R);
+
+        % ----------------------------------------------------
+        % 2. WAYPOINT TRACKING
+        % ----------------------------------------------------
         target_wp = path(waypoint_idx, :);
+        if enable_visualization && mod(loop_count, viz_update_stride) == 0
+            plotter = plotter.updatePositionDesired(target_wp);
+        end
+
         dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
-        
         active_tol = waypoint_tolerance;
-        if waypoint_idx == num_waypoints, active_tol = final_tolerance; end
+        if waypoint_idx == num_waypoints
+            active_tol = final_tolerance;
+        end
 
         if dist_to_wp <= active_tol
             waypoint_idx = waypoint_idx + 1;
-            controller_state = []; % Reset PID integrals
-            
+            controller_state = [];
+
             if waypoint_idx > num_waypoints
                 goal_reached = true;
+                vel_msg.linear.x = 0;
+                vel_msg.angular.z = 0;
+                send(vel_pub, vel_msg);
+
+                fprintf('\n[SUCCESS] Final waypoint reached at t=%.2f s\n', t_elapsed);
+                fprintf('[FINAL] Pose(map): x=%.3f, y=%.3f, theta=%.3f\n', pose(1), pose(2), pose(3));
                 break;
             end
-            
             target_wp = path(waypoint_idx, :);
             dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
-            if enable_visualization
-                plotter = plotter.updatePositionDesired(target_wp);
-            end
         end
 
-        % Get PID and APF commands
+        % PID tracker 
         [v_cmd, w_cmd, controller_state] = navigatePID(pose, target_wp(:), controller_state, dt);
+
+        % Reactive obstacle avoidance 
         [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false);
 
-        vel_msg.linear.x = v_cmd;
-        vel_msg.angular.z = w_cmd;
+        % Publish
+        vel_msg.linear.x = v_cmd;      
+        vel_msg.angular.z = w_cmd;     
         send(vel_pub, vel_msg);
         
-        % Visualization
+        % ----------------------------------------------------
+        % 3. VISUALIZATION & THROTTLING
+        % ----------------------------------------------------
         if enable_visualization && mod(loop_count, viz_update_stride) == 0
             plotter = plotter.updatePose(pose(1:2)', pose(3));
+
             if plot_scan_visualization && g_scan_received && ~isempty(g_scan)
                 cart = rosReadCartesian(g_scan);
                 if ~isempty(cart)
@@ -311,69 +291,59 @@ try
                     plotter = plotter.updateScan(cart_world);
                 end
             end
+            
+            % Draw AMCL Cloud to verify drift correction convergence
+            if use_amcl
+                try
+                    plotter = plotter.updateParticles(mcl.Particles);
+                catch
+                end
+            end
+            
+            drawnow limitrate;
         end
         
         if mod(loop_count, 10) == 0
-            fprintf('wp=%d/%d | pos=[%5.2f, %5.2f] | wp_dist=%5.2f m | v=%5.2f, w=%5.2f | avoid=%d\n', ...
-                waypoint_idx, num_waypoints, pose(1), pose(2), dist_to_wp, v_cmd, w_cmd, avoid_dbg.avoid_mode);
+            fprintf('t=%6.2f s | wp=%d/%d | pos=[%7.4f, %7.4f] | wp_dist=%6.3f m | v=%6.3f, w=%6.3f\n', ...
+                t_elapsed, waypoint_idx, num_waypoints, pose(1), pose(2), dist_to_wp, v_cmd, w_cmd);
         end
 
         loop_elapsed = toc(mission_start) - t_elapsed;
         pause(max(0, (1 / update_rate_hz) - loop_elapsed));
     end
     
-    % Stop robot safely
-    vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
-    
-    if goal_reached
-        fprintf('\n[SUCCESS] Goal reached at t=%.2f s. Final Pose: [%.3f, %.3f]\n', toc(mission_start), pose(1), pose(2));
-    end
+    % Stop robot on exit
+    vel_msg.linear.x = 0;
+    vel_msg.angular.z = 0;
+    send(vel_pub, vel_msg);
     
 catch ME
-    vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
+    % Emergency stop on error
+    fprintf('\n[ERROR] %s\n', ME.message);
+    vel_msg.linear.x = 0;
+    vel_msg.angular.z = 0;
+    send(vel_pub, vel_msg);
     rethrow(ME);
 end
 
+if toc(mission_start) >= max_mission_time
+    fprintf('\n[TIMEOUT] Mission exceeded %.1f seconds\n', max_mission_time);
+end
 clear vel_pub odom_sub scan_sub node;
 
-%% ========== AMCL ODOMETRY HELPERS ==========
-
-function delta = getOdomDelta(prev, curr)
-    % Calculates the local robot movement [dx, dy, dtheta] between two odometry states
-    dx = curr(1) - prev(1);
-    dy = curr(2) - prev(2);
-    dth = wrapToPiLocal(curr(3) - prev(3));
-    
-    % Rotate world delta into the robot's previous local frame
-    c = cos(-prev(3)); 
-    s = sin(-prev(3));
-    loc = [c, -s; s, c] * [dx; dy];
-    delta = [loc(1), loc(2), dth];
-end
-
-function newPose = integrateOdom(prev, delta)
-    % Adds local delta to global map pose (used when AMCL skips an update)
-    c = cos(prev(3)); 
-    s = sin(prev(3));
-    g_xy = [c, -s; s, c] * [delta(1); delta(2)];
-    newPose = [prev(1) + g_xy(1), prev(2) + g_xy(2), wrapToPiLocal(prev(3) + delta(3))];
-end
-
-%% ========== ROS CALLBACKS ==========
+%% ========== CALLBACK FUNCTIONS ==========
 function odomCallback(msg)
-    global g_pose g_pose_received g_last_odom_time
+    global g_pose g_pose_received
     x = msg.pose.pose.position.x;
     y = msg.pose.pose.position.y;
-    quat = msg.pose.pose.orientation;
     
-    % Manual Quat to Yaw
-    w = quat.w; qx = quat.x; qy = quat.y; qz = quat.z;
-    siny_cosp = 2 * (w * qz + qx * qy);
-    cosy_cosp = 1 - 2 * (qy^2 + qz^2);
-    theta = atan2(siny_cosp, cosy_cosp);
+    quat = msg.pose.pose.orientation;
+    theta = quat2euler([quat.w, quat.x, quat.y, quat.z]); 
+    theta = theta(3);  
     
     g_pose = [x; y; theta];
     g_pose_received = true;
+    global g_last_odom_time
     g_last_odom_time = now * 86400;
 end
 
@@ -383,6 +353,37 @@ function scanCallback(msg)
     g_scan_received = true;
 end
 
-function a = wrapToPiLocal(a)
-    a = mod(a + pi, 2 * pi) - pi;
+%% ========== UTILITY: QUATERNION TO EULER ==========
+function angles = quat2euler(q)
+    w = q(1); x = q(2); y = q(3); z = q(4);
+    sinr_cosp = 2 * (w * x + y * z);
+    cosr_cosp = 1 - 2 * (x^2 + y^2);
+    roll = atan2(sinr_cosp, cosr_cosp);
+    
+    sinp = 2 * (w * y - z * x);
+    if abs(sinp) >= 1
+        pitch = pi/2 * sign(sinp);
+    else
+        pitch = asin(sinp);
+    end
+    
+    siny_cosp = 2 * (w * z + x * y);
+    cosy_cosp = 1 - 2 * (y^2 + z^2);
+    yaw = atan2(siny_cosp, cosy_cosp);
+    angles = [roll, pitch, yaw];
+end
+
+%% ========== UTILITY: TRANSFORMS ==========
+% Calculates Rigid Transformations to handle Frame Tracking
+function T = pose2tform2D(p)
+    c = cos(p(3));
+    s = sin(p(3));
+    T = [c, -s, p(1);
+         s,  c, p(2);
+         0,  0, 1];
+end
+
+function p = tform2pose2D(T)
+    p = [T(1,3); T(2,3); atan2(T(2,1), T(1,1))];
+    p = p(:);
 end
