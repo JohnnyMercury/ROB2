@@ -196,11 +196,12 @@ try
         if dist_to_wp <= active_tol
             waypoint_idx = waypoint_idx + 1;
 
-            % Reset only the integral term to avoid wind-up between segments.
-            % Keeping derivative state avoids the kick that fully resetting
-            % controller_state caused at every waypoint.
+            % Reset integral and tell PID to suppress derivative on next call
+            % (heading direction changes when target waypoint changes; otherwise
+            % we get a derivative spike from the suddenly-different heading error).
             if ~isempty(controller_state) && isstruct(controller_state)
                 controller_state.integral_distance = 0;
+                controller_state.heading_derivative_initialized = false;
             end
 
             if waypoint_idx > num_waypoints
