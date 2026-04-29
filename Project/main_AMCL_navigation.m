@@ -33,7 +33,7 @@ prm_cfg.numNodes = 350;
 prm_cfg.connectionDistance = 0.55;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
-prm_cfg.inflateRadius = 0.08;
+prm_cfg.inflateRadius = 0.18;          % was 0.08, too small for robot's footprint
 prm_cfg.simplifyEps = 0.08;
 
 
@@ -118,24 +118,29 @@ if enable_amcl
         
         mcl = monteCarloLocalization;
         mcl.UseLidarScan = true;
-        
+
         odomModel = odometryMotionModel;
         odomModel.Noise = [0.1 0.1 0.1 0.1];
         mcl.MotionModel = odomModel;
-        
+
         sensorModel = likelihoodFieldSensorModel;
         sensorModel.SensorLimits = [0.08 3.5];
         sensorModel.Map = locMap;
         mcl.SensorModel = sensorModel;
-        
-        % Only run heavy update math when moving to save loop time (10cm or ~5.7 deg)
-        mcl.UpdateThresholds = [0.10, 0.10, 0.10]; 
+
+        % Run particle update on small motion too (was 0.10/0.10/0.10 which
+        % caused dead-reckoning gaps at slow speeds).
+        mcl.UpdateThresholds = [0.05, 0.05, 0.05];
         mcl.ResamplingInterval = 1;
-        mcl.ParticleLimits = [200 1000];
+        mcl.ParticleLimits = [500 2000];     % larger pool => more robust convergence
         mcl.GlobalLocalization = false;
         mcl.InitialPose = map_start_pose;
-        mcl.InitialCovariance = diag([0.02, 0.02, 0.01]);
-        
+        % Initial covariance was diag([0.02, 0.02, 0.01]) - this assumes you
+        % place the robot within ~2 cm of the marked map start. In practice
+        % we drop the robot somewhere in zone A, so we widen the prior to
+        % 0.20 m / 0.10 rad. Particles will quickly converge after a few scans.
+        mcl.InitialCovariance = diag([0.20, 0.20, 0.10]);
+
         use_amcl = true;
         fprintf('[INIT] AMCL initialized successfully.\n');
     catch ME
@@ -181,10 +186,11 @@ try
         if dt <= 0; dt = 0.001; end
         t_prev_loop = t_elapsed;
         
-        now_sec = now * 86400;
+        now_sec = posixtime(datetime('now'));
 
         if enable_visualization
-            if isempty(plotter.fig) || ~isvalid(plotter.fig)
+            if ~isstruct(plotter) || ~isfield(plotter, 'fig') || ...
+               isempty(plotter.fig) || ~isvalid(plotter.fig)
                 fprintf('\n[STOP] Figure closed by user. Stopping robot.\n');
                 break;
             end
@@ -205,27 +211,38 @@ try
         odom_pose = g_pose(:)';
         T_O_R = pose2tform2D(odom_pose);
         
-        % Process Scan Matching dynamically to align Map 
+        % Process Scan Matching dynamically to align Map
         if use_amcl && g_scan_received && ~isempty(g_scan)
+            mcl_ok = false;
             try
                 scan_obj = rosReadLidarScan(g_scan);
                 ranges = double(scan_obj.Ranges(:));
                 angles = double(scan_obj.Angles(:));
-                
+                mcl_ok = true;
+            catch ME_scan
+                if mod(loop_count, 50) == 0
+                    fprintf('[AMCL] Scan parse error (suppressed): %s\n', ME_scan.message);
+                end
+            end
+
+            if mcl_ok
                 valid = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
                 if sum(valid) > 20
                     scan_clean = lidarScan(ranges(valid), angles(valid));
-                    
-                    % Update Particle Filter
-                    [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
-                    if isUpdated
-                        % AMCL provided a correction! Calculate the new Map-to-Odom relationship
-                        T_M_R_mcl = pose2tform2D(estPose);
-                        T_M_O = T_M_R_mcl / T_O_R; 
+                    try
+                        % Update Particle Filter
+                        [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
+                        if isUpdated
+                            % AMCL provided a correction. Update map<->odom transform.
+                            T_M_R_mcl = pose2tform2D(estPose);
+                            T_M_O = T_M_R_mcl / T_O_R;
+                        end
+                    catch ME_mcl
+                        if mod(loop_count, 50) == 0
+                            fprintf('[AMCL] Update error (suppressed): %s\n', ME_mcl.message);
+                        end
                     end
                 end
-            catch
-                % Silently ignore bad frames to keep control loop running uninterrupted
             end
         end
         
@@ -250,7 +267,10 @@ try
 
         if dist_to_wp <= active_tol
             waypoint_idx = waypoint_idx + 1;
-            controller_state = [];
+            % Reset only integral term to avoid wind-up; preserve derivative.
+            if ~isempty(controller_state) && isstruct(controller_state)
+                controller_state.integral_distance = 0;
+            end
 
             if waypoint_idx > num_waypoints
                 goal_reached = true;
@@ -344,7 +364,7 @@ function odomCallback(msg)
     g_pose = [x; y; theta];
     g_pose_received = true;
     global g_last_odom_time
-    g_last_odom_time = now * 86400;
+    g_last_odom_time = posixtime(datetime('now'));
 end
 
 function scanCallback(msg)

@@ -22,18 +22,23 @@ function [v_cmd, w_cmd, controller_state] = navigatePID(pose, goal, controller_s
 
 % Initialize controller state on first call
 if nargin < 3 || isempty(controller_state)
-    controller_state.Kp_h = 2.0;              % Heading proportional gain
-    controller_state.Kd_h = 1.0;              % Heading derivative gain
-    controller_state.Kp_p = 8.0;              % Position proportional gain
+    % PID gains tuned for smooth motion at v_max = 0.10 m/s.
+    % Kp_p was previously 8.0 which caused permanent saturation at 0.1 m/s
+    % (PID always asking for >>0.1 m/s, then clipped). With Kp_p = 1.0 the
+    % controller still saturates near the goal but ramps down smoothly when
+    % approaching, which is what we want.
+    controller_state.Kp_h = 1.5;              % Heading proportional gain
+    controller_state.Kd_h = 0.3;              % Heading derivative gain (lower => less kick on transitions)
+    controller_state.Kp_p = 1.0;              % Position proportional gain
     controller_state.Ki_p = 0.02;             % Position integral gain
-    
+
     controller_state.heading_error_prev = 0;  % Previous heading error (for derivative)
     controller_state.heading_derivative_initialized = false;
     controller_state.integral_distance = 0;   % Accumulated distance error
-    controller_state.distance_tol = 0.01;     % Distance threshold (m)
-    controller_state.heading_tol = 0.01;      % Heading threshold (rad)
-    controller_state.final_heading_tol = 0.01; % Goal heading threshold (rad)
-    
+    controller_state.distance_tol = 0.05;     % Distance threshold (m) - was 0.01 (oscillated near goal)
+    controller_state.heading_tol = 0.05;      % Heading threshold (rad) - was 0.01 (oscillated)
+    controller_state.final_heading_tol = 0.05; % Goal heading threshold (rad)
+
     controller_state.integral_max = 1.0;       % Anti-windup threshold
 end
 

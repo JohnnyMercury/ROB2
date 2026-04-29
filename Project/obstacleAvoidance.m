@@ -17,13 +17,14 @@ if nargin < 5 || isempty(heading_only_mode)
 end
 
 if nargin < 4 || isempty(avoid_state)
-    % APF parameters (mirrors original PID-Obstacle_Avoidance approach).
+    % APF parameters tuned to match TurtleBot3 burger (radius ~0.14 m).
     avoid_state.beta = 0.3;                 % Repulsive force strength
-    avoid_state.d0 = 0.20;                  % APF activation distance, should not be lower than avoid_state.stop_distance (m)
+    avoid_state.d0 = 0.35;                  % APF activation distance (was 0.20, too late to react)
     avoid_state.front_back_angle = deg2rad(40);
 
-    % Lightweight angular smoothing for jitter reduction.
-    avoid_state.w_filter_alpha = 0.25;
+    % Angular smoothing. 0.25 was too heavy (slow reaction => overshoot).
+    % Higher alpha = more responsive to new commands.
+    avoid_state.w_filter_alpha = 0.5;
     avoid_state.w_prev = 0.0;
 
     % Valid scan limits.
@@ -45,16 +46,30 @@ if isempty(scan_msg)
     return;
 end
 
-[front_min, left_min, right_min] = getScanSectorMinimums(scan_msg, ...
-    deg2rad(35), deg2rad(25), deg2rad(100), ...
-    avoid_state.min_valid_range, avoid_state.max_valid_range);
+% Read lidar once and reuse (was being read twice => potentially stale).
+try
+    scan_obj = rosReadLidarScan(scan_msg);
+    ranges_full = double(scan_obj.Ranges(:));
+    angles_full = double(scan_obj.Angles(:));
+catch
+    return;  % bad scan, keep nominal commands
+end
 
-[f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, ...
-    avoid_state.beta, avoid_state.d0, avoid_state.front_back_angle, ...
-    avoid_state.min_valid_range, avoid_state.max_valid_range);
+valid_full = isfinite(ranges_full) & ...
+    (ranges_full > avoid_state.min_valid_range) & ...
+    (ranges_full < avoid_state.max_valid_range);
+ranges_v = ranges_full(valid_full);
+angles_v = angles_full(valid_full);
+
+[front_min, left_min, right_min] = getScanSectorMinimumsCached(ranges_v, angles_v, ...
+    deg2rad(35), deg2rad(25), deg2rad(100));
+
+[f_rep_x, f_rep_y] = computeRepulsiveForcesCached(ranges_v, angles_v, ...
+    avoid_state.beta, avoid_state.d0, avoid_state.front_back_angle);
 
 % Break APF symmetry: dead-center obstacles can cancel lateral force.
-if front_min < avoid_state.d0 && abs(f_rep_y) < 0.01
+% Threshold 0.01 was too tight (almost any tiny imbalance skipped the fix).
+if front_min < avoid_state.d0 && abs(f_rep_y) < 0.05
     if left_min > right_min
         f_rep_y = 0.25;
     else
@@ -81,8 +96,9 @@ else
 end
 
 % Avoid reversing and keep the command bounded.
+% Reduced max angular velocity from 1.0 to 0.6 rad/s for smoother turns.
 v_cmd = max(0.0, v_cmd);
-w_cmd = max(min(w_cmd, 1.0), -1.0);
+w_cmd = max(min(w_cmd, 0.6), -0.6);
 
 alpha = avoid_state.w_filter_alpha;
 w_cmd = (1 - alpha) * avoid_state.w_prev + alpha * w_cmd;
@@ -101,15 +117,8 @@ debug.right_min = right_min;
 
 end
 
-function [front_min, left_min, right_min] = getScanSectorMinimums(scan_msg, front_half_angle, side_inner_angle, side_outer_angle, min_valid_range, max_valid_range)
-scan_obj = rosReadLidarScan(scan_msg);
-ranges = double(scan_obj.Ranges(:));
-angles = double(scan_obj.Angles(:));
-
-valid = isfinite(ranges) & (ranges > min_valid_range) & (ranges < max_valid_range);
-ranges = ranges(valid);
-angles = angles(valid);
-
+function [front_min, left_min, right_min] = getScanSectorMinimumsCached(ranges, angles, front_half_angle, side_inner_angle, side_outer_angle)
+% Operates on already-filtered ranges/angles. Avoids re-reading scan.
 if isempty(ranges)
     front_min = inf;
     left_min = inf;
@@ -134,15 +143,8 @@ else
 end
 end
 
-function [f_rep_x, f_rep_y] = computeRepulsiveForces(scan_msg, beta, d0, front_back_angle, min_valid_range, max_valid_range)
-scan_obj = rosReadLidarScan(scan_msg);
-ranges = double(scan_obj.Ranges(:));
-angles = double(scan_obj.Angles(:));
-
-valid = isfinite(ranges) & (ranges > min_valid_range) & (ranges < max_valid_range);
-ranges = ranges(valid);
-angles = angles(valid);
-
+function [f_rep_x, f_rep_y] = computeRepulsiveForcesCached(ranges, angles, beta, d0, front_back_angle)
+% Operates on already-filtered ranges/angles. Avoids re-reading scan.
 if isempty(ranges)
     f_rep_x = 0.0;
     f_rep_y = 0.0;

@@ -35,7 +35,7 @@ prm_cfg.numNodes = 350;
 prm_cfg.connectionDistance = 0.55;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
-prm_cfg.inflateRadius = 0.08;
+prm_cfg.inflateRadius = 0.18;          % was 0.08, too small for robot's footprint
 prm_cfg.simplifyEps = 0.08;
 
 
@@ -159,10 +159,11 @@ try
         if dt <= 0; dt = 0.001; end
         t_prev_loop = t_elapsed;
         
-        now_sec = now * 86400;
+        now_sec = posixtime(datetime('now'));
 
         if enable_visualization
-            if isempty(plotter.fig) || ~isvalid(plotter.fig)
+            if ~isstruct(plotter) || ~isfield(plotter, 'fig') || ...
+               isempty(plotter.fig) || ~isvalid(plotter.fig)
                 fprintf('\n[STOP] Figure closed by user. Stopping robot and ending script.\n');
                 break;
             end
@@ -195,9 +196,12 @@ try
         if dist_to_wp <= active_tol
             waypoint_idx = waypoint_idx + 1;
 
-            % Reset PID memory at waypoint transitions to reduce jitter from
-            % carried integral/derivative state between sharp segment changes.
-            controller_state = [];
+            % Reset only the integral term to avoid wind-up between segments.
+            % Keeping derivative state avoids the kick that fully resetting
+            % controller_state caused at every waypoint.
+            if ~isempty(controller_state) && isstruct(controller_state)
+                controller_state.integral_distance = 0;
+            end
 
             if waypoint_idx > num_waypoints
                 goal_reached = true;
@@ -298,7 +302,7 @@ function odomCallback(msg)
     g_pose = [x; y; theta];
     g_pose_received = true;
     global g_last_odom_time
-    g_last_odom_time = now * 86400;
+    g_last_odom_time = posixtime(datetime('now'));
 end
 
 function scanCallback(msg)
