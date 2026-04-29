@@ -12,6 +12,8 @@ classdef plotTurtlebot
 
         old_position = [0 0]
         autoExpandMargin = 0.4
+        currentXLim = [-2 2]
+        currentYLim = [-2 2]
         h_traj
 
         h_robotBody
@@ -170,6 +172,8 @@ classdef plotTurtlebot
             axis(obj.h_ax, 'equal');
             xlim(obj.h_ax, obj.xLim);
             ylim(obj.h_ax, obj.yLim);
+            obj.currentXLim = obj.xLim;
+            obj.currentYLim = obj.yLim;
             set(obj.h_ax, 'fontsize', 10);
             xlabel(obj.h_ax, '$x$ [m]', 'interpreter', 'latex', 'fontsize', 10);
             ylabel(obj.h_ax, '$y$ [m]', 'interpreter', 'latex', 'fontsize', 10);
@@ -183,13 +187,10 @@ classdef plotTurtlebot
         end
 
         function obj = maybeExpandAxes(obj, pose_xy, scan_xy)
-            x_now = xlim(obj.h_ax);
-            y_now = ylim(obj.h_ax);
-
-            x_min = x_now(1);
-            x_max = x_now(2);
-            y_min = y_now(1);
-            y_max = y_now(2);
+            x_min = obj.currentXLim(1);
+            x_max = obj.currentXLim(2);
+            y_min = obj.currentYLim(1);
+            y_max = obj.currentYLim(2);
 
             if ~isempty(pose_xy)
                 if iscolumn(pose_xy)
@@ -208,9 +209,12 @@ classdef plotTurtlebot
                 y_max = max(y_max, max(scan_xy(:,2)) + 0.2);
             end
 
-            if x_min < x_now(1) || x_max > x_now(2) || y_min < y_now(1) || y_max > y_now(2)
+            if x_min < obj.currentXLim(1) || x_max > obj.currentXLim(2) || ...
+               y_min < obj.currentYLim(1) || y_max > obj.currentYLim(2)
                 xlim(obj.h_ax, [x_min x_max]);
                 ylim(obj.h_ax, [y_min y_max]);
+                obj.currentXLim = [x_min x_max];
+                obj.currentYLim = [y_min y_max];
             end
         end
     end
