@@ -14,16 +14,14 @@ clc;
 %% User Mission Parameters
 map_input_file = 'slam_map_test_20260429_091016.mat';  % '' = latest slam_map_*.mat in Project/Maps
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
-
-% FILL THESE IN WITH COORDINATES FOR AREA B AND C
-goal_B = [5.0, 2.0]; % Goal in Area B
-goal_C = [8.0, -1.0]; % Goal in Area C
+goal_B = [3.0, 1.0];  % Goal in Area B FILL IN!!!!!!!!!!
+goal_C = [8.0, 1.0];  % Goal in Area C FILL IN!!!!!!!!!!
 
 % Navigation
 enable_amcl = true;               % Enable LiDAR Scan Matching to eliminate Odometry drift
 waypoint_tolerance = 0.12;        % Intermediate waypoint tolerance (m)
 final_tolerance = 0.08;           % Final waypoint tolerance (m)
-max_mission_time = 180;           % Mission timeout (s)
+max_mission_time = 300;           % Mission timeout (s)
 update_rate_hz = 10;              % Control loop frequency (Hz)
 dt = 1 / update_rate_hz;
 
@@ -47,6 +45,13 @@ f = 1226.5;         % Camera focal length (pixels)
 target_distance = 1.0; 
 Kp_dist = 0.5;      
 Kp_angle = 0.002;
+
+found_orange = false; % Variable for orange circle
+found_blue = falske;  % Variable for blue circle
+target_color_focus =''; % Keeps track on which color we are working on
+search_waypoints = [3.0, 1.0; 4.5, 1.0; 6.0, 1.0]; % Search points for area B FILL IN!!!!!!!!!!
+current_search_idx = 1;
+spin_progress = 0;  % Keeps track on spinning
 
 % Shared callback state
 global g_pose g_pose_received g_scan g_scan_received g_last_odom_time
@@ -196,12 +201,12 @@ try
         end
 
         % Detect stale odometry stream
-        if (now_sec - g_last_odom_time) > 1.0
-            vel_msg.linear.x = 0;
-            vel_msg.angular.z = 0;
-            send(vel_pub, vel_msg);
-            error('Odometry stream is stale (>1 s). Commanding stop for safety.');
-        end
+        % if (now_sec - g_last_odom_time) > 1.0
+        %     vel_msg.linear.x = 0;
+        %     vel_msg.angular.z = 0;
+        %     send(vel_pub, vel_msg);
+        %     error('Odometry stream is stale (>1 s). Commanding stop for safety.');
+        % end
         
         % ----------------------------------------------------
         % 1. LOCALIZATION (Drift-Corrected Pose Tracking)
@@ -244,7 +249,7 @@ try
         % ----------------------------------------------------
         switch state
             case 'NAV_TO_B'
-                %Task: Drive from area A to area B
+                % Task: Drive from area A to area B
                 target_wp = path(waypoint_idx, :);
                 dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
                 
@@ -259,13 +264,19 @@ try
                 if dist_to_wp <= active_tol
                     waypoint_idx = waypoint_idx + 1;
                     controller_state = [];
+                end
+
+                if dist_to_wp <= active_tol
+                    waypoint_idx = waypoint_idx + 1;
+                    controller_state = [];
 
                     if waypoint_idx > num_waypoints
                         fprintf('[STATE] Area B reached. Switching to SEARCH_CIRCLE.\n');
-                        state = 'SEARCH_CIRCLE';
-            end
-            target_wp = path(waypoint_idx, :);
-            dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
+                        state = 'SEARCH_DRIVE';
+                    else
+                        target_wp = path(waypoint_idx, :);
+                        dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
+                    end
                 end
 
                 if strcmp(state, 'NAV_TO_B')
@@ -273,16 +284,72 @@ try
                     [v_cmd, w_cmd, avoid_state, ~] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false);
                 end
 
-            case 'SEARCH_CIRCLE'
-                % Task: Rotate to find the targets
-                v_cmd = 0.0; w_cmd = 0.3; % Slow rotation
+            case 'SEARCH_DRIVE'
+                % Task: Drive to next searchpoint to scan for circles
+                target_wp = search_waypoints(current_search_idx, :);
+                dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
                 
+                % Search for circles while driving
+                if g_image_received && ~isempty(g_image)
+                    image_rgb = flip(g_image, 1);
+                    [centersO, radiiO, centersB, radiiB] = detectCircles(image_rgb);
+                    
+                    if ~isempty(centersO) && ~found_orange
+                        fprintf('[STATE] Orange target detected! Switching to ALIGN_AND_PICTURE.\n');
+                        target_color_focus = 'Orange';
+                        state = 'ALIGN_AND_PICTURE';
+                    elseif ~isempty(centersB) && ~found_blue
+                        fprintf('[STATE] Blue target detected! Switching to ALIGN_AND_PICTURE.\n');
+                        target_color_focus = 'Blue';
+                        state = 'ALIGN_AND_PICTURE';
+                    end
+                end
+
+                if strcmp(state, 'SEARCH_DRIVE')
+                    if dist_to_wp <= waypoint_tolerance
+                        fprintf('[STATE] Reached searchpoint. %d. Starts to rotate 360 degrees.\n', current_search_idx);
+                        state = 'SEARCH_SPIN';
+                        spin_progress = 0; 
+                        controller_state = [];
+                    else
+                        [v_cmd, w_cmd, controller_state] = navigatePID(pose, target_wp(:), controller_state, dt);
+                        [v_cmd, w_cmd, avoid_state, ~] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false);
+                    end
+                end
+                
+            case 'SEARCH_SPIN'
+                % Task: Rotate to find the targets
+                v_cmd = 0.0; w_cmd = 0.4; % Slow rotation
+                
+                % Search for circles
                 if g_image_received && ~isempty(g_image)
                     image_rgb = flip(g_image, 1);
                     [centersO, ~, centersB, ~] = detectCircles(image_rgb);
-                    if ~isempty(centersO) || ~isempty(centersB)
-                        fprintf('[STATE] Target detected! Switching to ALIGN_AND_PICTURE.\n');
+
+                    if ~isempty(centersO) && ~found_orange
+                        fprintf('[STATE] Orange target detected! Switching to ALIGN_AND_PICTURE.\n');
+                        target_color_focus = 'Orange';
                         state = 'ALIGN_AND_PICTURE';
+                    elseif ~isempty(centersB) && ~found_blue
+                        fprintf('[STATE] Blue target detected! Switching to ALIGN_AND_PICTURE.\n');
+                        target_color_focus = 'Blue';
+                        state = 'ALIGN_AND_PICTURE';
+                    end
+                end
+
+                if strcmp(state, 'SEARCH_SPIN')
+                    spin_progress = spin_progress + (abs(w_cmd) * dt); % Checks how much we have rotated
+                    
+                    if spin_progress >= (2 * pi)
+                        current_search_idx = current_search_idx + 1;
+                        
+                        if current_search_idx > size(search_waypoints, 1)
+                            fprintf('[STATE] Every searchpoint is scanned, but found no circles. Starting over.\n');
+                            current_search_idx = 1;
+                        else
+                            fprintf('[STATE] Scanning finished. Driving to next searchpoint.\n');
+                        end
+                        state = 'SEARCH_DRIVE';
                     end
                 end
 
@@ -294,10 +361,11 @@ try
                     img_width = size(image_rgb, 2); 
                     
                     active_dist = []; active_center_x = [];
-                    if ~isempty(centersO)
+
+                    if strcmp(target_color_focus, 'Orange') && ~isempty(centersO)
                         active_dist = f * H / (2 * radiiO(1));
                         active_center_x = centersO(1, 1);
-                    elseif ~isempty(centersB)
+                    elseif strcmp(target_color_focus, 'Blue') && ~isempty(centersB)
                         active_dist = f * H / (2 * radiiB(1));
                         active_center_x = centersB(1, 1);
                     end
@@ -315,21 +383,40 @@ try
                         
                         % Threshold for taking the picture
                         if abs(err_dist) < 0.05 && abs(err_angle) < 20
-                            fprintf('[STATE] In position. Taking picture...\n');
+                            fprintf('[STATE] In position. Taking picture...\n', target_color_focus);
                             vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
-                            imwrite(image_rgb, 'TB_Mission_Success.png');
+
+                            % Save picture 
+                            timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+                            img_filename = fullfile('circle_images', sprintf('%s_Circle_%s.png', target_color_focus, timestamp));
+                            imwrite(image_rgb, img_filename);
+                            fprintf('[INFO] Picture saved as: %s\n', img_filename);
                             pause(1.5);
-                            
-                            fprintf('[PLAN] Re-planning for Area C...\n');
-                            prm_out = navigatePRM(map_input_file, pose(1:2)', goal_C, prm_cfg);
-                            path = prm_out.path;
-                            num_waypoints = size(path, 1);
-                            waypoint_idx = 1;
-                            if enable_visualization; plotter = plotter.updatePositionDesired(path(1,:)); end
-                            state = 'NAV_TO_C';
+
+                            % Updates boolean variables
+                            if strcmp(target_color_focus, 'Orange')
+                                found_orange = true;
+                            elseif strcmp(target_color_focus, 'Blue')
+                                found_blue = true;
+                            end
+
+                            % Checks if we're done with both circles 
+                            if found_orange && found_blue
+                                fprintf('[PLAN] Both cirles found! Re-planning for Area C...\n');
+                                prm_out = navigatePRM(map_input_file, pose(1:2)', goal_C, prm_cfg);
+                                path = prm_out.path;
+                                num_waypoints = size(path, 1);
+                                waypoint_idx = 1;
+                                if enable_visualization; plotter = plotter.updatePositionDesired(path(1,:)); end
+                                state = 'NAV_TO_C';
+                            else
+                                fprintf('[STATE] Still missing one circles. Returning to search...\n');
+                                state = 'SEARCH_DRIVE';
+                            end
                         end
                     else
-                        state = 'SEARCH_CIRCLE'; % Target lost, search again
+                        % Target lost, sarching againg
+                        state = 'SEARCH_SPIN'; % Ro
                     end
                 end
 
@@ -362,12 +449,6 @@ try
                 v_cmd = 0; w_cmd = 0;
                 break;
         end
-
-        % PID tracker 
-        [v_cmd, w_cmd, controller_state] = navigatePID(pose, target_wp(:), controller_state, dt);
-
-        % Reactive obstacle avoidance 
-        [v_cmd, w_cmd, avoid_state, avoid_dbg] = obstacleAvoidance(v_cmd, w_cmd, g_scan, avoid_state, false);
 
         % Publish
         vel_msg.linear.x = v_cmd;      
