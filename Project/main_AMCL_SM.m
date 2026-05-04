@@ -12,10 +12,10 @@ clc;
 % 4. Navigate from Area B to Area C.
 
 %% User Mission Parameters
-map_input_file = 'slam_map_test_20260429_091016.mat';  % '' = latest slam_map_*.mat in Project/Maps
+map_input_file = 'slam_map_test_best_sofar.mat';  % '' = latest slam_map_*.mat in Project/Maps
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
-goal_B = [3.0, 1.0];  % Goal in Area B FILL IN!!!!!!!!!!
-goal_C = [8.0, 1.0];  % Goal in Area C FILL IN!!!!!!!!!!
+goal_B = [17.5, 6.0];  % Goal in Area B FILL IN!!!!!!!!!!
+goal_C = [15.0, 13.0];  % Goal in Area C FILL IN!!!!!!!!!!
 
 % Navigation
 enable_amcl = true;               % Enable LiDAR Scan Matching to eliminate Odometry drift
@@ -32,8 +32,8 @@ viz_update_stride = 3;            % update plots every N loops
 
 % PRM planner overrides
 prm_cfg = struct();
-prm_cfg.numNodes = 350;
-prm_cfg.connectionDistance = 0.55;
+prm_cfg.numNodes = 1000;
+prm_cfg.connectionDistance = 1.00;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
 prm_cfg.inflateRadius = 0.08;
@@ -47,9 +47,9 @@ Kp_dist = 0.5;
 Kp_angle = 0.002;
 
 found_orange = false; % Variable for orange circle
-found_blue = falske;  % Variable for blue circle
+found_blue = false;  % Variable for blue circle
 target_color_focus =''; % Keeps track on which color we are working on
-search_waypoints = [3.0, 1.0; 4.5, 1.0; 6.0, 1.0]; % Search points for area B FILL IN!!!!!!!!!!
+search_waypoints = [17.5, 7.0; 17.5, 8.0; 18.0, 11.0]; % Search points for area B FILL IN!!!!!!!!!!
 current_search_idx = 1;
 spin_progress = 0;  % Keeps track on spinning
 
