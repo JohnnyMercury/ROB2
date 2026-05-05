@@ -37,6 +37,8 @@ cfg.minValidPointsPerScan = 12;
 
 cfg.saveFolder = fullfile(fileparts(mfilename('fullpath')), 'Maps');
 cfg.sessionFilePrefix = 'slam_session_test_';
+cfg.checkpointEveryAccepted = 25;
+cfg.checkpointFileName = 'slam_session_checkpoint.mat';
 
 %% ROS setup
 if isempty(getenv('ROS_DOMAIN_ID')) || ~strcmp(getenv('ROS_DOMAIN_ID'), cfg.rosDomainId)
@@ -91,6 +93,9 @@ tfInitPose = [];
 prevAcceptedTfPose = [];
 
 scanArchive = struct('ranges', {}, 'angles', {}, 'relPose', {}, 'tfPoseRel', {}, 'stamp', {});
+latestSession = struct();
+
+checkpointPath = fullfile(cfg.saveFolder, cfg.checkpointFileName);
 
 % Visualization
 fig = figure('Name', 'Project SLAM Scan (teleop)', 'NumberTitle', 'off');
@@ -156,6 +161,12 @@ try
                 fprintf('Accepted scan #%d | pose=[%.3f %.3f %.3f]\n', acceptedCount, p(1), p(2), p(3));
             end
 
+            if mod(acceptedCount, cfg.checkpointEveryAccepted) == 0
+                latestSession = makeSessionStruct(cfg, acceptedCount, scanArchive, slamObj);
+                save(checkpointPath, 'latestSession', '-v7.3');
+                fprintf('[CHECKPOINT] Saved session checkpoint: %s\n', checkpointPath);
+            end
+
             cla(ax);
             show(slamObj, 'Parent', ax);
             title(ax, 'Live SLAM Map (close figure to stop + save)');
@@ -166,6 +177,15 @@ try
     end
 catch ME
     clear scanSub tfSub
+    try
+        if acceptedCount > 0
+            latestSession = makeSessionStruct(cfg, acceptedCount, scanArchive, slamObj);
+            save(checkpointPath, 'latestSession', '-v7.3');
+            fprintf('[CHECKPOINT] Saved session checkpoint after stop/error: %s\n', checkpointPath);
+        end
+    catch saveME
+        fprintf('[WARN] Failed to write checkpoint: %s\n', saveME.message);
+    end
     if ~strcmp(ME.identifier, 'MapScanSLAM:UserStop')
         rethrow(ME);
     end
@@ -177,28 +197,16 @@ if ~exist(cfg.saveFolder, 'dir')
 end
 
 session = struct();
-session.cfg = cfg;
-session.createdAt = datestr(now, 30);
-session.acceptedCount = acceptedCount;
-session.scanArchive = scanArchive;
-[session.scans, session.poses] = scansAndPoses(slamObj);
-session.mapResolution = cfg.mapResolution;
-session.maxLidarRange = cfg.maxLidarRange;
-
-try
-    session.rawOccupancyMap = getOccupancyMapCompat(slamObj, cfg.mapResolution, cfg.maxLidarRange);
-catch
-    session.rawOccupancyMap = [];
-end
-
-session.slamObj = slamObj;
+session = makeSessionStruct(cfg, acceptedCount, scanArchive, slamObj);
 
 saveName = [cfg.sessionFilePrefix datestr(now, 'yyyymmdd_HHMMSS') '.mat'];
 savePath = fullfile(cfg.saveFolder, saveName);
 save(savePath, 'session', '-v7.3');
+save(checkpointPath, 'latestSession', '-v7.3');
 
 fprintf('[SAVE] Accepted scans: %d\n', acceptedCount);
 fprintf('[SAVE] Session file: %s\n', savePath);
+fprintf('[SAVE] Checkpoint file: %s\n', checkpointPath);
 
 %% Local helpers
 function scanCallback(message)
@@ -349,4 +357,23 @@ function occMap = getOccupancyMapCompat(slamObj, mapResolution, maxLidarRange)
     end
 
     occMap = buildMap(scans, poses, mapResolution, maxLidarRange);
+end
+
+function session = makeSessionStruct(cfg, acceptedCount, scanArchive, slamObj)
+session = struct();
+session.cfg = cfg;
+session.createdAt = datestr(now, 30);
+session.acceptedCount = acceptedCount;
+session.scanArchive = scanArchive;
+[session.scans, session.poses] = scansAndPoses(slamObj);
+session.mapResolution = cfg.mapResolution;
+session.maxLidarRange = cfg.maxLidarRange;
+
+try
+    session.rawOccupancyMap = getOccupancyMapCompat(slamObj, cfg.mapResolution, cfg.maxLidarRange);
+catch
+    session.rawOccupancyMap = [];
+end
+
+session.slamObj = slamObj;
 end
