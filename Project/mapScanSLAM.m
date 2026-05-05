@@ -37,6 +37,7 @@ cfg.minValidPointsPerScan = 12;
 
 cfg.saveFolder = fullfile(fileparts(mfilename('fullpath')), 'Maps');
 cfg.sessionFilePrefix = 'slam_session_test_';
+cfg.inputSessionFile = '';   % Optional: resume from a previous session or rebuilt map .mat
 cfg.checkpointEveryAccepted = 25;
 cfg.checkpointFileName = 'slam_session_checkpoint.mat';
 
@@ -81,6 +82,18 @@ while isempty(g_scan_msg) || isempty(g_tf_msg)
     pause(0.01);
 end
 
+currentTfPose = extractOdomPoseFromTf(g_tf_msg);
+if isempty(currentTfPose)
+    error('Could not extract an initial odom pose from /tf.');
+end
+
+resumeData = [];
+if ~isempty(cfg.inputSessionFile)
+    inputPath = resolveInputPath(cfg.inputSessionFile, cfg.saveFolder);
+    fprintf('[INIT] Resuming from input file: %s\n', inputPath);
+    resumeData = loadResumeArtifact(inputPath);
+end
+
 %% SLAM object
 slamObj = lidarSLAM(cfg.mapResolution, cfg.maxLidarRange, cfg.maxNumScans);
 slamObj.LoopClosureThreshold = cfg.loopClosureThreshold;
@@ -96,6 +109,25 @@ scanArchive = struct('ranges', {}, 'angles', {}, 'relPose', {}, 'tfPoseRel', {},
 latestSession = struct();
 
 checkpointPath = fullfile(cfg.saveFolder, cfg.checkpointFileName);
+
+if ~isempty(resumeData)
+    if isfield(resumeData, 'slamObj') && ~isempty(resumeData.slamObj)
+        slamObj = resumeData.slamObj;
+    end
+
+    if isfield(resumeData, 'scanArchive') && ~isempty(resumeData.scanArchive)
+        scanArchive = resumeData.scanArchive;
+        acceptedCount = numel(scanArchive);
+    end
+
+    if isfield(resumeData, 'lastTfPoseRel') && ~isempty(resumeData.lastTfPoseRel)
+        prevAcceptedTfPose = resumeData.lastTfPoseRel;
+        tfInitPose = [currentTfPose(1) - prevAcceptedTfPose(1), ...
+                      currentTfPose(2) - prevAcceptedTfPose(2), ...
+                      wrapToPiLocal(currentTfPose(3) - prevAcceptedTfPose(3))];
+        fprintf('[INIT] Resuming from %d prior accepted scans.\n', acceptedCount);
+    end
+end
 
 % Visualization
 fig = figure('Name', 'Project SLAM Scan (teleop)', 'NumberTitle', 'off');
@@ -357,6 +389,94 @@ function occMap = getOccupancyMapCompat(slamObj, mapResolution, maxLidarRange)
     end
 
     occMap = buildMap(scans, poses, mapResolution, maxLidarRange);
+end
+
+function inputPath = resolveInputPath(inputFile, mapsFolder)
+if isfile(inputFile)
+    inputPath = inputFile;
+    return;
+end
+
+candidate = fullfile(mapsFolder, inputFile);
+if isfile(candidate)
+    inputPath = candidate;
+    return;
+end
+
+error('Input file not found: %s', inputFile);
+end
+
+function resumeData = loadResumeArtifact(inputPath)
+S = load(inputPath);
+resumeData = struct();
+
+if isfield(S, 'latestSession')
+    resumeData = sessionStructToResumeData(S.latestSession);
+    return;
+end
+
+if isfield(S, 'session')
+    resumeData = sessionStructToResumeData(S.session);
+    return;
+end
+
+if isfield(S, 'output') && isfield(S.output, 'slamFiltered') && ~isempty(S.output.slamFiltered)
+    resumeData.slamObj = S.output.slamFiltered;
+    [scans, poses] = scansAndPoses(resumeData.slamObj);
+    resumeData.scanArchive = scansAndPosesToArchive(scans, poses);
+    if ~isempty(resumeData.scanArchive)
+        resumeData.lastTfPoseRel = resumeData.scanArchive(end).tfPoseRel;
+    else
+        resumeData.lastTfPoseRel = [];
+    end
+    return;
+end
+
+error('Input file does not contain a resumable session or SLAM object: %s', inputPath);
+end
+
+function resumeData = sessionStructToResumeData(session)
+resumeData = struct();
+
+if isfield(session, 'slamObj') && ~isempty(session.slamObj)
+    resumeData.slamObj = session.slamObj;
+else
+    resumeData.slamObj = [];
+end
+
+if isfield(session, 'scanArchive') && ~isempty(session.scanArchive)
+    resumeData.scanArchive = session.scanArchive;
+    if isfield(session.scanArchive(end), 'tfPoseRel')
+        resumeData.lastTfPoseRel = session.scanArchive(end).tfPoseRel;
+    else
+        resumeData.lastTfPoseRel = [];
+    end
+else
+    resumeData.scanArchive = [];
+    resumeData.lastTfPoseRel = [];
+end
+end
+
+function scanArchive = scansAndPosesToArchive(scans, poses)
+scanArchive = struct('ranges', {}, 'angles', {}, 'relPose', {}, 'tfPoseRel', {}, 'stamp', {});
+
+if isempty(scans) || isempty(poses)
+    return;
+end
+
+for i = 1:numel(scans)
+    if i == 1
+        relPose = [0, 0, 0];
+    else
+        relPose = poseDiff2D(poses(i - 1, :), poses(i, :));
+    end
+
+    scanArchive(i).ranges = scans(i).Ranges;
+    scanArchive(i).angles = scans(i).Angles;
+    scanArchive(i).relPose = relPose;
+    scanArchive(i).tfPoseRel = poses(i, :);
+    scanArchive(i).stamp = '';
+end
 end
 
 function session = makeSessionStruct(cfg, acceptedCount, scanArchive, slamObj)
