@@ -150,7 +150,7 @@ if enable_amcl
         mcl.ParticleLimits = [200 1000];
         mcl.GlobalLocalization = false;
         mcl.InitialPose = map_start_pose;
-        mcl.InitialCovariance = diag([0.02, 0.02, 0.01]);
+        mcl.InitialCovariance = diag([0.1, 0.1, 0.05]);  % Relaxed to allow faster convergence if startup pose is incorrect
         
         use_amcl = true;
         fprintf('[INIT] AMCL initialized successfully.\n');
@@ -182,6 +182,51 @@ avoid_state = [];
 mission_start = tic;
 t_prev_loop = 0;
 loop_count = 0;
+
+fprintf('[START] Beginning AMCL warmup phase (10 seconds)...\n');
+
+% Warmup Phase: Let AMCL converge while robot is stationary
+if use_amcl
+    warmup_duration = 10;  % seconds
+    warmup_start = tic;
+    while toc(warmup_start) < warmup_duration
+        if ~g_scan_received || isempty(g_scan)
+            pause(0.05);
+            continue;
+        end
+        
+        % Read odometry and scan
+        odom_pose = g_pose(:)';
+        T_O_R = pose2tform2D(odom_pose);
+        
+        % Force AMCL to update every loop during warmup
+        mcl.UpdateThresholds = [inf, inf, inf];
+        
+        try
+            scan_obj = rosReadLidarScan(g_scan);
+            ranges = double(scan_obj.Ranges(:));
+            angles = double(scan_obj.Angles(:));
+            valid = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
+            
+            if sum(valid) > 20
+                scan_clean = lidarScan(ranges(valid), angles(valid));
+                [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
+                if isUpdated
+                    T_M_R_mcl = pose2tform2D(estPose);
+                    T_M_O = T_M_R_mcl / T_O_R;
+                end
+            end
+        catch
+        end
+        
+        % Small delays to keep loop from spinning too fast
+        pause(0.05);
+        if mod(round(toc(warmup_start)*10), 10) == 0  % Every 1 second
+            fprintf('  Warmup: %.1f / %.1f seconds\n', toc(warmup_start), warmup_duration);
+        end
+    end
+    fprintf('[INIT] AMCL warmup complete. Particles converged.\n');
+end
 
 fprintf('[START] Beginning state machine mission...\n');
 
@@ -217,6 +262,13 @@ try
         
         % Process Scan Matching dynamically to align Map 
         if use_amcl && g_scan_received && ~isempty(g_scan)
+            % At startup, always update AMCL to converge quickly; after 30 loops, use normal thresholds
+            if loop_count < 30
+                mcl.UpdateThresholds = [inf, inf, inf];  % Always update during warmup
+            else
+                mcl.UpdateThresholds = [0.10, 0.10, 0.10];  % Normal decimation after startup
+            end
+            
             try
                 scan_obj = rosReadLidarScan(g_scan);
                 ranges = double(scan_obj.Ranges(:));
