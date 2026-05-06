@@ -14,7 +14,7 @@ clc;
 %% User Mission Parameters
 map_input_file = 'slam_map_fixed.mat';  % '' = latest slam_map_*.mat in Project/Maps
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
-goal_B = [18.6, 5.8];  % Goal in Area B FILL IN!!!!!!!!!!
+goal_B = [17.7, 5.8];  % Goal in Area B FILL IN!!!!!!!!!!
 goal_C = [15.6, 11.4];  % Goal in Area C FILL IN!!!!!!!!!!
 
 % Navigation
@@ -37,7 +37,7 @@ prm_cfg.connectionDistance = 10.00;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
 prm_cfg.inflateRadius = 0.08;
-prm_cfg.simplifyEps = 0.40; % INCREASED: Removes unnecessary breadcrumbs in straight hallways
+prm_cfg.simplifyEps = 0.08;
 
 % Vision 
 H = 0.10;           % Real circle diameter (meters)
@@ -54,7 +54,7 @@ current_search_idx = 1;
 spin_progress = 0;  % Keeps track on spinning
 
 % Shared callback state
-global g_pose g_pose_received g_scan g_scan_received
+global g_pose g_pose_received g_scan g_scan_received g_last_odom_time
 global g_image g_image_received
 g_pose = [0; 0; 0];
 g_pose_received = false;
@@ -62,6 +62,7 @@ g_scan = [];
 g_scan_received = false;
 g_image = [];
 g_image_received = false;
+g_last_odom_time = -inf;
 
 %% ROS2 Initialization
 fprintf('[INIT] Starting ROS2 node and topic connections...\n');
@@ -143,14 +144,13 @@ if enable_amcl
         sensorModel.Map = locMap;
         mcl.SensorModel = sensorModel;
         
-        % Slower updates to rely on odometry during long straight hallways
-        mcl.UpdateThresholds = [0.25, 0.25, 0.25]; 
+        % Only run heavy update math when moving to save loop time (10cm or ~5.7 deg)
+        mcl.UpdateThresholds = [0.10, 0.10, 0.10]; 
         mcl.ResamplingInterval = 1;
-        % Increased particles and covariance to catch the robot if placed far from [0,0]
-        mcl.ParticleLimits = [300 1000]; 
+        mcl.ParticleLimits = [200 1000];
         mcl.GlobalLocalization = false;
         mcl.InitialPose = map_start_pose;
-        mcl.InitialCovariance = diag([0.5, 0.5, 0.2]); 
+        mcl.InitialCovariance = diag([0.02, 0.02, 0.01]);
         
         use_amcl = true;
         fprintf('[INIT] AMCL initialized successfully.\n');
@@ -164,7 +164,7 @@ end
 T_M_R_init = pose2tform2D(map_start_pose);
 T_O_R_init = pose2tform2D(odom_ref_pose);
 T_M_O = T_M_R_init / T_O_R_init; % Matrix Right Division (T_M_R_init * inv(T_O_R_init))
-T_M_O_target = T_M_O; % Initialize target transform for smoothing
+
 
 %% Initialize Visualization
 plotter = [];
@@ -174,15 +174,9 @@ if enable_visualization
 end
 
 %% MAIN CONTROL LOOP (STATE MACHINE)
-if use_amcl
-    state = 'LOCALIZE_SPIN';
-else
-    state = 'NAV_TO_B';
-end
-
+state = 'NAV_TO_B';
 controller_state = [];  
 avoid_state = [];       
-is_localized = false;
 
 % Mission Clock
 mission_start = tic;
@@ -197,6 +191,7 @@ try
         t_elapsed = toc(mission_start);
         dt = max(0.001, t_elapsed - t_prev_loop);
         t_prev_loop = t_elapsed;
+        now_sec = now * 86400;
 
         if enable_visualization
             if isempty(plotter.fig) || ~isvalid(plotter.fig)
@@ -204,6 +199,14 @@ try
                 break;
             end
         end
+
+        % Detect stale odometry stream
+        % if (now_sec - g_last_odom_time) > 1.0
+        %     vel_msg.linear.x = 0;
+        %     vel_msg.angular.z = 0;
+        %     send(vel_pub, vel_msg);
+        %     error('Odometry stream is stale (>1 s). Commanding stop for safety.');
+        % end
         
         % ----------------------------------------------------
         % 1. LOCALIZATION (Drift-Corrected Pose Tracking)
@@ -212,99 +215,39 @@ try
         odom_pose = g_pose(:)';
         T_O_R = pose2tform2D(odom_pose);
         
-        % Predict current best pose BEFORE AMCL (using our existing drift correction)
-        current_pose_guess = tform2pose2D(T_M_O * T_O_R);
-        
         % Process Scan Matching dynamically to align Map 
         if use_amcl && g_scan_received && ~isempty(g_scan)
             try
-                % Robust extraction directly from message properties to avoid rosReadLidarScan crashes
-                try
-                    ranges = double(g_scan.ranges);
-                    angleMin = double(g_scan.angle_min);
-                    angleInc = double(g_scan.angle_increment);
-                catch
-                    ranges = double(g_scan.Ranges);
-                    angleMin = double(g_scan.AngleMin);
-                    angleInc = double(g_scan.AngleIncrement);
-                end
-                
-                angles = angleMin + (0:numel(ranges)-1)' * angleInc;
+                scan_obj = rosReadLidarScan(g_scan);
+                ranges = double(scan_obj.Ranges(:));
+                angles = double(scan_obj.Angles(:));
                 valid = isfinite(ranges) & ranges > 0.08 & ranges < 3.48;
                 
                 if sum(valid) > 20
                     scan_clean = lidarScan(ranges(valid), angles(valid));
-                    
                     % Update Particle Filter
                     [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
-                    
                     if isUpdated
-                        % CALCULATE THE JUMP: Did AMCL hallucinate?
-                        dist_jump = hypot(estPose(1) - current_pose_guess(1), estPose(2) - current_pose_guess(2));
-                        yaw_jump = abs(mod((estPose(3) - current_pose_guess(3)) + pi, 2*pi) - pi);
-                        
-                        if ~is_localized
-                            % OUTLIER GUARD: Accept the massive FIRST jump to align the map
-                            T_M_R_mcl = pose2tform2D(estPose);
-                            T_M_O_target = T_M_R_mcl / T_O_R; 
-                            is_localized = true;
-                            
-                            % Print to terminal so you know it's working
-                            fprintf('[AMCL] INITIAL MAP LOCK! -> X:%.2f Y:%.2f Yaw:%.2f\n', estPose(1), estPose(2), estPose(3));
-                        elseif dist_jump < 0.20 && yaw_jump < 0.30
-                            % Strict guard for normal driving (rejects hallway slipping)
-                            T_M_R_mcl = pose2tform2D(estPose);
-                            T_M_O_target = T_M_R_mcl / T_O_R; 
-                            
-                            % Print to terminal so you know it's working
-                            fprintf('[AMCL] Drift Corrected! Target -> X:%.2f Y:%.2f Yaw:%.2f\n', estPose(1), estPose(2), estPose(3));
-                        else
-                            fprintf('[AMCL WARN] Rejected Hallway Slip! (Jumped: %.2fm, %.2frad)\n', dist_jump, yaw_jump);
-                        end
+                        % AMCL provided a correction! Calculate the new Map-to-Odom relationship
+                        T_M_R_mcl = pose2tform2D(estPose);
+                        T_M_O = T_M_R_mcl / T_O_R; 
                     end
                 end
-            catch ME
-                % Instead of silencing the error, display it so we know if it's breaking!
-                fprintf('[AMCL ERROR] Failed during scan processing: %s\n', ME.message);
+            catch
+                % Silently ignore bad frames to keep control loop running uninterrupted
             end
         end
         
-        % --- PID SHOCK ABSORBER ---
-        % Smoothly pull the real transform towards the target transform (15% per tick).
-        % This prevents the robot from jerking into walls when AMCL updates.
-        p_current = tform2pose2D(T_M_O);
-        p_target  = tform2pose2D(T_M_O_target);
-        
-        p_current(1:2) = p_current(1:2) + 0.15 * (p_target(1:2) - p_current(1:2));
-        angle_diff = mod((p_target(3) - p_current(3)) + pi, 2*pi) - pi;
-        p_current(3) = mod((p_current(3) + 0.15 * angle_diff) + pi, 2*pi) - pi;
-        
-        T_M_O = pose2tform2D(p_current);
-        
-        % Calculate raw robot pose from drift transform + live odometry 
+        % Calculate smoothed robot pose from drift transform + live odometry 
+        % This guarantees the loop operates at 10Hz smoothly even when MCL pauses
         T_M_R = T_M_O * T_O_R;
         pose = tform2pose2D(T_M_R);
         v_cmd = 0; w_cmd = 0;
-        dist_to_wp = 0; % Initialize to prevent logging errors in non-navigating states
 
         % ----------------------------------------------------
         % 2. WAYPOINT TRACKING
         % ----------------------------------------------------
         switch state
-            case 'LOCALIZE_SPIN'
-                % Task: Spin 360 degrees before moving. This allows the LiDAR to scan
-                % the whole room and perfectly align the Map to Reality.
-                v_cmd = 0.0; 
-                w_cmd = 0.5;
-                spin_progress = spin_progress + (abs(w_cmd) * dt);
-                
-                if spin_progress >= (2 * pi)
-                    fprintf('[STATE] Localization spin complete. Map is aligned. Starting navigation.\n');
-                    state = 'NAV_TO_B';
-                    spin_progress = 0; 
-                    controller_state = [];
-                end
-
             case 'NAV_TO_B'
                 % Task: Drive from area A to area B
                 target_wp = path(waypoint_idx, :);
@@ -321,6 +264,11 @@ try
                 if dist_to_wp <= active_tol
                     waypoint_idx = waypoint_idx + 1;
                     controller_state = [];
+                end
+
+                if dist_to_wp <= active_tol
+                    waypoint_idx = waypoint_idx + 1;
+                    controller_state = [];
 
                     if waypoint_idx > num_waypoints
                         fprintf('[STATE] Area B reached. Switching to SEARCH_CIRCLE.\n');
@@ -328,7 +276,6 @@ try
                     else
                         target_wp = path(waypoint_idx, :);
                         dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
-                        fprintf('[STATE] Waypoint reached! Turning to Waypoint %d/%d.\n', waypoint_idx, num_waypoints);
                     end
                 end
 
@@ -436,13 +383,11 @@ try
                         
                         % Threshold for taking the picture
                         if abs(err_dist) < 0.05 && abs(err_angle) < 20
-                            fprintf('[STATE] In position. Taking picture...\n');
+                            fprintf('[STATE] In position. Taking picture...\n', target_color_focus);
                             vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
 
                             % Save picture 
                             timestamp = datestr(now, 'yyyymmdd_HHMMSS');
-                            % Ensure directory exists
-                            if ~exist('circle_images', 'dir'), mkdir('circle_images'); end
                             img_filename = fullfile('circle_images', sprintf('%s_Circle_%s.png', target_color_focus, timestamp));
                             imwrite(image_rgb, img_filename);
                             fprintf('[INFO] Picture saved as: %s\n', img_filename);
@@ -470,7 +415,7 @@ try
                             end
                         end
                     else
-                        % Target lost, searching againg
+                        % Target lost, sarching againg
                         state = 'SEARCH_SPIN'; % Rotating to see if we can find it 
                     end
                 end
@@ -575,6 +520,8 @@ function odomCallback(msg)
     
     g_pose = [x; y; theta];
     g_pose_received = true;
+    global g_last_odom_time
+    g_last_odom_time = now * 86400;
 end
 
 function scanCallback(msg)
