@@ -33,7 +33,7 @@ viz_update_stride = 3;            % update plots every N loops
 % PRM planner overrides
 prm_cfg = struct();
 prm_cfg.numNodes = 500;
-prm_cfg.connectionDistance = 10.00;
+prm_cfg.connectionDistance = 3.00;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
 prm_cfg.inflateRadius = 0.08;
@@ -119,6 +119,12 @@ if num_waypoints < 2
     error('PRM path has too few waypoints.');
 end
 
+% DEBUG: Print all waypoints for verification
+fprintf('[PLAN] Planned %d waypoints:\n', num_waypoints);
+for i = 1:num_waypoints
+    fprintf('  wp_%d: [%.4f, %.4f]\n', i, path(i,1), path(i,2));
+end
+
 %% AMCL Localization Initialization
 use_amcl = false;
 if enable_amcl
@@ -183,6 +189,12 @@ mission_start = tic;
 t_prev_loop = 0;
 loop_count = 0;
 
+% AMCL correction tracking
+correctionsLog = {};
+last_T_M_O = T_M_O;  % store last transform to detect large corrections
+amcl_update_count = 0;
+
+
 fprintf('[START] Beginning AMCL warmup phase (10 seconds)...\n');
 
 % Warmup Phase: Let AMCL converge while robot is stationary
@@ -199,8 +211,8 @@ if use_amcl
         odom_pose = g_pose(:)';
         T_O_R = pose2tform2D(odom_pose);
         
-        % Force AMCL to update every loop during warmup
-        mcl.UpdateThresholds = [inf, inf, inf];
+        % Force AMCL to update every loop during warmup (use large finite value instead of inf)
+        mcl.UpdateThresholds = [999, 999, 999];
         
         try
             scan_obj = rosReadLidarScan(g_scan);
@@ -264,7 +276,7 @@ try
         if use_amcl && g_scan_received && ~isempty(g_scan)
             % At startup, always update AMCL to converge quickly; after 30 loops, use normal thresholds
             if loop_count < 30
-                mcl.UpdateThresholds = [inf, inf, inf];  % Always update during warmup
+                mcl.UpdateThresholds = [999, 999, 999];  % Always update during warmup (large finite value)
             else
                 mcl.UpdateThresholds = [0.10, 0.10, 0.10];  % Normal decimation after startup
             end
@@ -280,9 +292,58 @@ try
                     % Update Particle Filter
                     [isUpdated, estPose, ~] = mcl(odom_pose, scan_clean);
                     if isUpdated
+                        amcl_update_count = amcl_update_count + 1;
+                        if mod(amcl_update_count, 10) == 0
+                            fprintf('[AMCL] Update #%d at t=%.1f s | estPose=[%.3f, %.3f, %.3f]\n', amcl_update_count, toc(mission_start), estPose(1), estPose(2), estPose(3));
+                        end
                         % AMCL provided a correction! Calculate the new Map-to-Odom relationship
                         T_M_R_mcl = pose2tform2D(estPose);
-                        T_M_O = T_M_R_mcl / T_O_R; 
+                        T_M_O_new = T_M_R_mcl / T_O_R;
+
+                        % Compute correction relative to last applied transform
+                        try
+                            tf_delta = T_M_O_new / last_T_M_O;
+                            delta_pose = tform2pose2D(tf_delta);
+                        catch
+                            delta_pose = [0,0,0];
+                        end
+
+                        corr_dist = hypot(delta_pose(1), delta_pose(2));
+                        corr_ang = delta_pose(3);
+
+                        % Log large corrections for debugging
+                        if corr_dist > 0.05 || abs(corr_ang) > 0.1
+                            numParticles = 0;
+                            try numParticles = size(mcl.Particles,1); catch; end
+                            fprintf('[AMCL] Large correction at t=%.1f s | est=[%.3f,%.3f,%.3f] | delta=[%.4f,%.4f,%.4f] | particles=%d\n', ...
+                                toc(mission_start), estPose(1), estPose(2), estPose(3), delta_pose(1), delta_pose(2), delta_pose(3), numParticles);
+                            correctionsLog{end+1} = struct('time', toc(mission_start), 'estPose', estPose, 'delta', delta_pose, 'particles', numParticles);
+                        end
+
+                        % Apply the new transform and remember it
+                        T_M_O = T_M_O_new;
+                        last_T_M_O = T_M_O;
+
+                        % If correction is large, replan from current estimated pose
+                        if corr_dist > 0.20 || abs(corr_ang) > 0.5
+                            try
+                                pose_now = tform2pose2D(T_M_O * T_O_R);
+                                fprintf('[AMCL] Significant correction detected (%.3fm, %.3frad). Replanning from [%.3f, %.3f].\n', corr_dist, corr_ang, pose_now(1), pose_now(2));
+                                prm_out = navigatePRM(map_input_file, pose_now(1:2)', goal_B, prm_cfg);
+                                path = prm_out.path;
+                                num_waypoints = size(path, 1);
+                                % choose nearest waypoint index to continue
+                                dists = hypot(path(:,1) - pose_now(1), path(:,2) - pose_now(2));
+                                [~, idx] = min(dists);
+                                waypoint_idx = max(1, idx);
+                                if enable_visualization
+                                    plotter = plotter.updatePositionDesired(path(waypoint_idx, :));
+                                end
+                                fprintf('[AMCL] Replan complete: new path has %d waypoints, continuing at wp_%d.\n', num_waypoints, waypoint_idx);
+                            catch ME
+                                fprintf('[AMCL] Replan failed: %s\n', ME.message);
+                            end
+                        end
                     end
                 end
             catch
@@ -314,11 +375,11 @@ try
                 if waypoint_idx == num_waypoints; active_tol = final_tolerance; end
 
                 if dist_to_wp <= active_tol
-                    waypoint_idx = waypoint_idx + 1;
-                    controller_state = [];
-                end
+                    % Log waypoint transition for diagnostics
+                    fprintf('[NAV] Reached waypoint %d at pose [%.3f, %.3f, %.3f].\n', ...
+                        waypoint_idx, pose(1), pose(2), pose(3));
 
-                if dist_to_wp <= active_tol
+                    % Advance a single waypoint and handle end-of-path
                     waypoint_idx = waypoint_idx + 1;
                     controller_state = [];
 
@@ -328,6 +389,10 @@ try
                     else
                         target_wp = path(waypoint_idx, :);
                         dist_to_wp = hypot(target_wp(1) - pose(1), target_wp(2) - pose(2));
+                        if enable_visualization && mod(loop_count, viz_update_stride) == 0
+                            plotter = plotter.updatePositionDesired(target_wp);
+                        end
+                        fprintf('[NAV] Next target: wp_%d [%.3f, %.3f]\n', waypoint_idx, target_wp(1), target_wp(2));
                     end
                 end
 

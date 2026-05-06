@@ -85,7 +85,9 @@ end
 
 % Optional simplification to reduce waypoint count.
 if cfg.simplifyPath
+    path_before_simplify = path;
     path = reducePathCollinear(path, cfg.simplifyEps);
+    fprintf('[PRM] Path simplified: %d waypoints -> %d waypoints\n', size(path_before_simplify, 1), size(path, 1));
 end
 
 % Visualize plan.
@@ -95,6 +97,13 @@ hold on;
 plot(path(:,1), path(:,2), 'r-', 'LineWidth', 2);
 plot(startPoint(1), startPoint(2), 'go', 'MarkerSize', 10, 'LineWidth', 2);
 plot(goalPoint(1), goalPoint(2), 'mx', 'MarkerSize', 10, 'LineWidth', 2);
+
+% Add waypoint numbers for debugging
+for i = 1:size(path, 1)
+    text(path(i,1), path(i,2), sprintf('%d', i), 'FontSize', 8, 'Color', 'red', ...
+        'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
+end
+
 legend('Roadmap', 'Path', 'Start', 'Goal', 'Location', 'best');
 title('PRM path from SLAM map');
 
@@ -119,7 +128,7 @@ def.retryNumNodes = 700;
 def.retryConnectionDistance = 0.5;
 def.inflateRadius = 0.20;
 def.occupancyThreshold = 0.62;
-def.simplifyPath = true;
+def.simplifyPath = false;  % DISABLED FOR DEBUGGING - set to true when working
 def.simplifyEps = 0.015;
 
 f = fieldnames(def);
