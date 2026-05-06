@@ -5,7 +5,7 @@ clc;
 close all;
 
 %% 1. Configuration
-inputFile = 'slam_map_fixed.mat';
+inputFile = 'manual_custom_map.mat';
 
 %% 2. Load the Map Data
 fprintf('[LOAD] Loading %s...\n', inputFile);

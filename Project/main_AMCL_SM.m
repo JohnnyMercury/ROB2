@@ -14,7 +14,7 @@ clc;
 %% User Mission Parameters
 map_input_file = 'slam_map_fixed.mat';  % '' = latest slam_map_*.mat in Project/Maps
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
-goal_B = [18.6, 5.8];  % Goal in Area B FILL IN!!!!!!!!!!
+goal_B = [17.7, 5.8];  % Goal in Area B FILL IN!!!!!!!!!!
 goal_C = [15.6, 11.4];  % Goal in Area C FILL IN!!!!!!!!!!
 
 % Navigation
@@ -125,10 +125,19 @@ if enable_amcl
     try
         % Load uninflated map for localization matching
         S_map = load(prm_out.mapFilePath);
-        if isfield(S_map.output, 'mapCleanProb')
-            locMap = S_map.output.mapCleanProb;
+        
+        if isfield(S_map, 'output')
+            if isfield(S_map.output, 'mapCleanProb') && ~isempty(S_map.output.mapCleanProb)
+                locMap = S_map.output.mapCleanProb;
+            elseif isfield(S_map.output, 'mapCleanBinary') && ~isempty(S_map.output.mapCleanBinary)
+                locMap = S_map.output.mapCleanBinary;
+            elseif isfield(S_map.output, 'rawOccMap') && ~isempty(S_map.output.rawOccMap)
+                locMap = S_map.output.rawOccMap;
+            else
+                error('Could not find a valid map variable (mapCleanProb, mapCleanBinary, rawOccMap) in the file.');
+            end
         else
-            locMap = S_map.output.rawOccMap;
+            error('Map file missing ''output'' struct.');
         end
         
         mcl = monteCarloLocalization;
