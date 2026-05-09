@@ -146,18 +146,19 @@ if enable_amcl
             matrix = occupancyMatrix(rawMap);
             locMap = occupancyMatrix(double(matrix), rawMap.Resolution);
             try 
-                locMap.GridLocationInWorld = rawMap.GridLocationInWorld;
-            catch
-                locMap.LocalOriginInWorld = rawMap.LocalOriginInWorld;
-            end
-        else
+                locMap.G
+
+
+
+
+
             % Standard ROS resolution er 20 celler pr. meter (0.05 m pr. celle)
             res = 20; 
             if isfield(S_map.output, 'resolution')
                 res = 1 / double(S_map.output.resolution);
             end
             % Opret et kort-objekt med skala, så AMCL forstår meter!
-            locMap = occupancyMap(double(rawMap), res);
+            locMap = occupancyMap(double(raw_map_data), res);
         end
 
         mcl = monteCarloLocalization;
