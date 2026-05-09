@@ -12,10 +12,10 @@ clc;
 % 4. Navigate from Area B to Area C.
 
 %% User Mission Parameters
-map_input_file = 'slam_map_fixed.mat';  % '' = latest slam_map_*.mat in Project/Maps
+map_input_file = 'edited_custom_map.mat';  % '' = latest slam_map_*.mat in Project/Maps
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
-goal_B = [17.7, 5.8];  % Goal in Area B FILL IN!!!!!!!!!!
-goal_C = [15.6, 11.4];  % Goal in Area C FILL IN!!!!!!!!!!
+goal_B = [20.35, 9.24];  % Goal in Area B 
+goal_C = [17.31, 17.26];  % Goal in Area C 
 
 % Navigation
 enable_amcl = true;               % Enable LiDAR Scan Matching to eliminate Odometry drift
