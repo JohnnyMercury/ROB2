@@ -288,27 +288,50 @@ error('Could not find nearby free point from [%.3f %.3f].', p(1), p(2));
 end
 
 function pathOut = reducePathCollinear(pathIn, epsVal)
-if size(pathIn, 1) <= 2
-    pathOut = pathIn;
-    return;
-end
-
-keep = true(size(pathIn, 1), 1);
-for i = 2:size(pathIn, 1)-1
-    a = pathIn(i, :) - pathIn(i-1, :);
-    b = pathIn(i+1, :) - pathIn(i, :);
-    if norm(a) < epsVal || norm(b) < epsVal
-        keep(i) = false;
-        continue;
+    % Mathematically robust collinearity reduction
+    if size(pathIn, 1) <= 2
+        pathOut = pathIn;
+        return;
     end
 
-    crossVal = abs(a(1)*b(2) - a(2)*b(1));
-    if crossVal < epsVal
-        keep(i) = false;
+    pathOut = pathIn(1, :);
+    max_gap = 0.40; % Maximum distance allowed between breadcrumb waypoints (meters)
+    
+    for i = 2:size(pathIn, 1)-1
+        % Vector from last KEPT point to the current point
+        a = pathIn(i, :) - pathOut(end, :);
+        
+        % Vector from last KEPT point to the NEXT point
+        c = pathIn(i+1, :) - pathOut(end, :);
+        
+        baseLen = norm(c);
+        distFromLast = norm(a);
+        
+        % 1. Safety check: Never allow waypoints to be too far apart
+        % This ensures the PID controller always has a nearby target 
+        if distFromLast >= max_gap
+            pathOut = [pathOut; pathIn(i, :)];
+            continue;
+        end
+        
+        if baseLen < 1e-4
+            continue; % Prevent division by zero
+        end
+        
+        % 2. Orthogonal distance check
+        % Calculate the distance from point 'i' to the straight line segment 'c'
+        area = abs(a(1)*c(2) - a(2)*c(1));
+        distToLine = area / baseLen;
+        
+        % If the point wanders off the line by more than epsVal (e.g. 0.10m),
+        % it means there is a corner here and we MUST keep the point.
+        if distToLine >= epsVal
+            pathOut = [pathOut; pathIn(i, :)];
+        end
     end
-end
-
-pathOut = pathIn(keep, :);
+    
+    % Always append the final goal point
+    pathOut = [pathOut; pathIn(end, :)];
 end
 
 function mapOut = tryReanchorMap(mapIn, mapRef)
