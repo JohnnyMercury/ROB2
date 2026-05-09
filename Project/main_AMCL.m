@@ -186,6 +186,7 @@ try
             
             if isUpdated
                 pose = estimatedPose(:); % Update global pose safely
+                fprintf('[AMCL] Pose Updated: X=%.3f, Y=%.3f, Yaw=%.3f\n', pose(1), pose(2), pose(3));
                 if enable_visualization
                     [particles, ~] = getParticles(amcl);
                 end
