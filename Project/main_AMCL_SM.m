@@ -140,11 +140,11 @@ if enable_amcl
         %     error('Map file missing ''output'' struct.');
         % end
         
-        if isa(raw_map, 'occupancyMap')
+        if isa(rawMap, 'occupancyMap')
             locMap = rawMap; % Den er allerede i orden
         elseif isa(rawMap,'binaryOccupancyMap')
             matrix = occupancyMatrix(rawMap);
-            locMap = occupancyMatrix(double(matrix), rawMap.Resolution);
+            locMap = occupancyMap(double(matrix), rawMap.Resolution);
             try 
                 locMap.GridLocationInWorld = rawMap.GridLocationInWorld;
             catch
@@ -164,7 +164,7 @@ if enable_amcl
         mcl.UseLidarScan = true;
         
         odomModel = odometryMotionModel;
-        odomModel.Noise = [0.1 0.1 0.1 0.1];
+        odomModel.Noise = [0.2 0.2 0.2 0.2];
         mcl.MotionModel = odomModel;
         
         sensorModel = likelihoodFieldSensorModel;
@@ -176,7 +176,7 @@ if enable_amcl
         mcl.UpdateThresholds = [0.25, 0.25, 0.25]; 
         mcl.ResamplingInterval = 1;
         % Increased particles and covariance to catch the robot if placed far from [0,0]
-        mcl.ParticleLimits = [300 1000]; 
+        mcl.ParticleLimits = [500 2000]; 
         mcl.GlobalLocalization = false;
         mcl.InitialPose = map_start_pose;
         mcl.InitialCovariance = diag([0.5, 0.5, 0.2]); 
@@ -280,7 +280,7 @@ try
                             
                             % Print to terminal so you know it's working
                             fprintf('[AMCL] INITIAL MAP LOCK! -> X:%.2f Y:%.2f Yaw:%.2f\n', estPose(1), estPose(2), estPose(3));
-                        elseif dist_jump < 0.50 && yaw_jump < 0.50
+                        elseif dist_jump < 1.20 && yaw_jump < 0.90
                             % Strict guard for normal driving (rejects hallway slipping)
                             T_M_R_mcl = pose2tform2D(estPose);
                             T_M_O_target = T_M_R_mcl / T_O_R; 
@@ -320,20 +320,6 @@ try
         % 2. WAYPOINT TRACKING
         % ----------------------------------------------------
         switch state
-            case 'LOCALIZE_SPIN'
-                % Task: Spin 360 degrees before moving. This allows the LiDAR to scan
-                % the whole room and perfectly align the Map to Reality.
-                v_cmd = 0.0; 
-                w_cmd = 0.5;
-                spin_progress = spin_progress + (abs(w_cmd) * dt);
-                
-                if spin_progress >= (2 * pi)
-                    fprintf('[STATE] Localization spin complete. Map is aligned. Starting navigation.\n');
-                    state = 'NAV_TO_B';
-                    spin_progress = 0; 
-                    controller_state = [];
-                end
-
             case 'NAV_TO_B'
                 % Task: Drive from area A to area B
                 target_wp = path(waypoint_idx, :);
