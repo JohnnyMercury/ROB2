@@ -5,7 +5,7 @@ clc;
 close all;
 
 %% 1. Configuration
-inputFile = 'edited_custom_map.mat';
+inputFile = 'edited_custom_map3.mat';
 
 %% 2. Load the Map Data
 fprintf('[LOAD] Loading %s...\n', inputFile);

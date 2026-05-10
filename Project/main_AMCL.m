@@ -7,7 +7,7 @@ clc;
 % plans PRM path, then tracks waypoints using PID + Obstacle Avoidance.
 
 %% User Mission Parameters
-map_input_file = 'edited_custom_map2.mat';  
+map_input_file = 'edited_custom_map3.mat';  
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
 goal_B = [20.405, 8.891];  % Goal in Area B 
 goal_C = [17.827, 16.739];  % Goal in Area C 
@@ -43,7 +43,7 @@ Kp_angle = 0.002;
 found_orange = false; 
 found_blue = false;  
 target_color_focus =''; 
-search_waypoints = [20.291, 9.636; 20.405, 10.667; 20.405, 12.042; 20.405, 13.016; 20.405, 14.276; 20.348, 15.479; 20.348, 16.510; 20.348, 17.369; 20.348, 17.369;]; % Area B 
+search_waypoints = [20.119, 9.693; 20.061, 10.896; 20.061, 12.042; 20.176, 13.245; 20.119, 14.906; 20.004, 16.911; 20.004, 18.343;]; % Area B 
 current_search_idx = 1;
 spin_progress = 0;
 frames_lost = 0; 
@@ -74,7 +74,7 @@ image_sub = ros2subscriber(node, '/camera/image_raw/compressed', @imageCallback)
 vel_pub = ros2publisher(node, cmd_topic, "geometry_msgs/Twist");
 vel_msg = ros2message('geometry_msgs/Twist');
 
-fprintf('[INIT] Waiting for topic discovery (5 seconds)...\n');
+fprintf('[INIT] Waiting for topic discovery (5 seconds)....\n');
 pause(5);
 
 % Odometry timeout validation
@@ -105,26 +105,39 @@ end
 
 fprintf('[INIT] Initializing Monte Carlo Localization...\n');
 amcl = monteCarloLocalization;
+amcl.ParticleLimits = [500, 3000]; % INCREASED: More particles helps to better match the true wall alignment
 
 % Configure Sensor Model for TB3 Burger
 sm = likelihoodFieldSensorModel;
 sm.Map = amcl_map;
 sm.SensorLimits = [0.12 3.5]; % TB3 Lidar min/max range
+sm.MaxLikelihoodDistance = 0.5; % INCREASED: Widens the snap distance so it aligns to walls even when drifting heavily
+sm.ExpectedMeasurementWeight = 0.95; % HIGH: Force the filter to trust Lidar wall-hits strongly
+sm.RandomMeasurementWeight = 0.05;
 amcl.SensorModel = sm;
 
 % Configure Motion Model
-amcl.MotionModel = odometryMotionModel; % Automatically defaults to differential drive
+mm = odometryMotionModel; 
+% INCREASED NOISE: [rot->rot, trans->trans, rot->trans, trans->rot]
+% This tells AMCL "My odometry drifts a lot, spread out the particles and look for LiDAR corrections"
+mm.Noise = [0.6, 0.6, 0.4, 0.4]; 
+amcl.MotionModel = mm; 
 
 % Configure Particle Filter
 amcl.GlobalLocalization = false;
 amcl.InitialPose = map_start_pose;
-amcl.InitialCovariance = diag([0.05, 0.05, 0.05]); % Low initial uncertainty
-amcl.UpdateThresholds = [0.05, 0.05, 0.05]; % [x, y, yaw] minimum motion to trigger update
-amcl.ResamplingInterval = 1;
+amcl.InitialCovariance = diag([0.20, 0.20, 0.10]); % INCREASED: Gives the particles more room to explore and fix bad odometry
+amcl.UpdateThresholds = [0.10, 0.10, 0.10]; % INCREASED: Prevents rapid particle collapse (Particle Deprivation)
+amcl.ResamplingInterval = 2; % INCREASED: Resample less often to keep the particle cloud diverse
 
 % Tracking variables
 pose = map_start_pose(:);
 particles = [];
+
+% --- MAP -> ODOM TRANSFORM VARIABLES ---
+map_odom_offset_xy = map_start_pose(1:2)'; 
+map_odom_offset_yaw = map_start_pose(3);
+first_odom_received = false;
 
 %% PRM Planning
 fprintf('[PLAN] Planning initial path to Area B...\n');
@@ -176,6 +189,16 @@ try
         % 1. LOCALIZATION (AMCL Update)
         % ----------------------------------------------------
         odom_pose = g_pose(:)'; % Raw odometry from ROS [x, y, theta]
+        
+        % Initialize map->odom offset exactly once
+        if ~first_odom_received && g_pose_received
+            map_odom_offset_yaw = map_start_pose(3) - odom_pose(3);
+            R_init = [cos(map_odom_offset_yaw), -sin(map_odom_offset_yaw); 
+                      sin(map_odom_offset_yaw),  cos(map_odom_offset_yaw)];
+            map_odom_offset_xy = map_start_pose(1:2)' - R_init * odom_pose(1:2)';
+            first_odom_received = true;
+        end
+
         scan_cache = [];
         
         if g_scan_received && ~isempty(g_scan)
@@ -185,16 +208,44 @@ try
             scan_cache.ranges = double(scan_obj.Ranges(:));
             scan_cache.angles = double(scan_obj.Angles(:));
             
-            % Update AMCL with odometry diff + LiDAR (passing ranges and angles separately)
-            [isUpdated, estimatedPose, ~] = amcl(odom_pose, scan_cache.ranges, scan_cache.angles);
+            % --- CRITICAL FIX: Filter out NaN and Inf values ---
+            % Unfiltered NaNs will poison AMCL weights, causing it to ignore LiDAR and rely only on odometry!
+            valid_idx = ~isnan(scan_cache.ranges) & ~isinf(scan_cache.ranges) & ...
+                        (scan_cache.ranges >= 0.15) & (scan_cache.ranges <= 3.45);
+            amcl_ranges = scan_cache.ranges(valid_idx);
+            amcl_angles = scan_cache.angles(valid_idx);
+            
+            % Update AMCL with odometry diff + LiDAR
+            [isUpdated, estimatedPose, ~] = amcl(odom_pose, amcl_ranges, amcl_angles);
             
             if isUpdated
-                pose = estimatedPose(:); % Update global pose safely
-                fprintf('[AMCL] Pose Updated: X=%.3f, Y=%.3f, Yaw=%.3f\n', pose(1), pose(2), pose(3));
+                % Calculate the new Map -> Odom transform from the corrected AMCL pose
+                map_odom_offset_yaw = estimatedPose(3) - odom_pose(3);
+                R_offset = [cos(map_odom_offset_yaw), -sin(map_odom_offset_yaw); 
+                            sin(map_odom_offset_yaw),  cos(map_odom_offset_yaw)];
+                map_odom_offset_xy = estimatedPose(1:2)' - R_offset * odom_pose(1:2)';
+                
+                fprintf('[AMCL] Pose Updated: X=%.3f, Y=%.3f, Yaw=%.3f\n', estimatedPose(1), estimatedPose(2), estimatedPose(3));
                 if enable_visualization
                     [particles, ~] = getParticles(amcl);
                 end
             end
+        end
+
+        % ----------------------------------------------------
+        % 1.5 CONTINUOUS POSE FUSION
+        % ----------------------------------------------------
+        % Fuses the smooth, high-frequency Odometry with the Map offset
+        if first_odom_received
+            R_offset = [cos(map_odom_offset_yaw), -sin(map_odom_offset_yaw); 
+                        sin(map_odom_offset_yaw),  cos(map_odom_offset_yaw)];
+            
+            current_xy = R_offset * odom_pose(1:2)' + map_odom_offset_xy;
+            current_yaw = odom_pose(3) + map_odom_offset_yaw;
+            
+            % Normalize yaw properly [-pi, pi]
+            current_yaw = atan2(sin(current_yaw), cos(current_yaw));
+            pose = [current_xy(1); current_xy(2); current_yaw];
         end
 
         v_cmd = 0; w_cmd = 0;
@@ -359,7 +410,7 @@ try
                             end
 
                             if found_orange && found_blue
-                                fprintf('[PLAN] Both cirles found! Re-planning for Area C...\n');
+                                fprintf('[PLAN] Both circles found! Re-planning for Area C...\n');
                                 prm_out = navigatePRM(map_input_file, pose(1:2)', goal_C, prm_cfg);
                                 path = prm_out.path;
                                 num_waypoints = size(path, 1);
@@ -367,7 +418,7 @@ try
                                 if enable_visualization; plotter = plotter.updatePositionDesired(path(1,:)); end
                                 state = 'NAV_TO_C';
                             else
-                                fprintf('[STATE] Still missing one circles. Returning to search...\n');
+                                fprintf('[STATE] Still missing one circle. Returning to search...\n');
                                 state = 'SEARCH_DRIVE';
                             end
                         end
@@ -376,13 +427,13 @@ try
                         v_cmd = last_v_cmd * 0.5; 
                         w_cmd = last_w_cmd * 0.5;
             
-            if frames_lost > 30 
-                fprintf('[STATE] Target lost for too long. Returning to SEARCH_SPIN.\n');
-                state = 'SEARCH_SPIN';
-                frames_lost = 0;
-             end
-         end
-       end  
+                        if frames_lost > 30 
+                            fprintf('[STATE] Target lost for too long. Returning to SEARCH_SPIN.\n');
+                            state = 'SEARCH_SPIN';
+                            frames_lost = 0;
+                        end
+                     end
+                end  
 
             case 'NAV_TO_C'
                 target_wp = path(waypoint_idx, :);
@@ -430,7 +481,6 @@ try
             plotter = plotter.updatePose(pose(1:2)', pose(3));
 
             if plot_scan_visualization && g_scan_received && ~isempty(g_scan) && ~isempty(scan_cache)
-                % Read efficiently from our cache instead of re-parsing the msg
                 cart_raw = pol2cart_local(scan_cache.angles, scan_cache.ranges);
                 R = [cos(pose(3)), -sin(pose(3)); sin(pose(3)), cos(pose(3))];
                 cart_world = cart_raw * R' + pose(1:2)';
