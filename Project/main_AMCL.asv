@@ -371,6 +371,7 @@ try
                                 state = 'SEARCH_DRIVE';
                             end
                         end
+             
                     else
                         frames_lost = frames_lost + 1;
                         v_cmd = last_v_cmd * 0.5; 
@@ -379,10 +380,9 @@ try
             if frames_lost > 50 
                 fprintf('[STATE] Target lost for too long. Returning to SEARCH_SPIN.\n');
                 state = 'SEARCH_SPIN';
-                frames_lost = 0;
-             end
-         end
-       end  
+                frames_lost = 0; 
+                    end
+                end
 
             case 'NAV_TO_C'
                 target_wp = path(waypoint_idx, :);
@@ -440,22 +440,6 @@ try
             % Draw AMCL particle cloud
             if ~isempty(particles)
                 plotter = plotter.updateParticles(particles(:, 1:2));
-            end
-
-            if (strcmp(state, 'SEARCH_DRIVE') || strcmp(state, 'SEARCH_SPIN') || strcmp(state, 'ALIGN_AND_PICTURE')) && g_image_received && ~isempty(g_image)
-                figure(2); % Vi tvinger den over i Figure 2, så den ikke overskriver robot-kortet i Figure 1!
-                image_rgb_viz = imrotate(g_image, 180);
-                [cO, rO, cB, rB] = detectCircles(image_rgb_viz);
-                
-                imshow(image_rgb_viz);
-                hold on;
-                if ~isempty(cB)
-                    viscircles(cB(1,:), rB(1), 'EdgeColor', 'b'); 
-                end
-                if ~isempty(cO)
-                    viscircles(cO(1,:), rO(1), 'EdgeColor', 'r'); 
-                end
-                hold off;
             end
             
             drawnow limitrate;

@@ -1,0 +1,196 @@
+%% TEST SCRIPT: KUN VISION OG POSITIONERING
+clear; close all; clc;
+
+%% ROS2 Opsætning
+setenv('ROS_DOMAIN_ID', '30');
+node = ros2node("vision_test_node");
+image_sub = ros2subscriber(node, '/camera/image_raw/compressed', @imageCallback);
+vel_pub = ros2publisher(node, "/cmd_vel", "geometry_msgs/Twist");
+vel_msg = ros2message('geometry_msgs/Twist');
+
+global g_image g_image_received
+g_image = [];
+g_image_received = false;
+
+pause(2); % Giv ROS tid til at starte op
+
+%% Parametre
+H = 0.10;           % Cirkel diameter i meter (10 cm)
+f = 1226.5;         % Brændvidde
+target_distance = 1.10; 
+Kp_dist = 0.5;      
+Kp_angle = 0.002;
+
+state = 'SEARCH_SPIN';
+frames_lost = 0;
+target_color_focus = '';
+mission_complete = false;
+
+fprintf('Vision Test Startet! Leder efter cirkler...\n');
+
+%% Hovedløkke
+last_v_cmd = 0; % Hukommelse for hastighed
+last_w_cmd = 0; % Hukommelse for drejehastighed
+
+try
+    while ~mission_complete
+        v_cmd = 0; w_cmd = 0;
+        
+        if g_image_received && ~isempty(g_image)
+            image_rgb = imrotate(g_image, 180); % Vender 180 grader, så højre/venstre bliver korrekt!
+            [centersO, radiiO, centersB, radiiB] = detectCircles(image_rgb);
+            img_width = size(image_rgb, 2); 
+
+            % --- VISUALISERING START ---
+            figure(1);
+            imshow(image_rgb);
+            hold on;
+            if ~isempty(centersB)
+                viscircles(centersB(1,:), radiiB(1), 'EdgeColor', 'b');
+            end
+            if ~isempty(centersO)
+                viscircles(centersO(1,:), radiiO(1), 'EdgeColor', 'r');
+            end
+            hold off;
+            drawnow limitrate;
+            % --- VISUALISERING SLUT ---
+            
+            switch state
+               case 'SEARCH_SPIN'
+                    w_cmd = 0.2; % Lidt langsommere spin
+                    
+                    if ~isempty(centersO)
+                        fprintf('Orange cirkel fundet! Bremser for at fokusere...\n');
+                        target_color_focus = 'Orange';
+                        
+                        % Hård opbremsning
+                        vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
+                        pause(0.5); 
+                        
+                        state = 'ALIGN_AND_PICTURE';
+                        continue; % <--- VIGTIGT: Springer publishen i bunden over, så vi ikke begynder at spinne igen!
+                        
+                    elseif ~isempty(centersB)
+                        fprintf('Blå cirkel fundet! Bremser for at fokusere...\n');
+                        target_color_focus = 'Blue';
+                        
+                        % Hård opbremsning
+                        vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
+                        pause(0.5); 
+                        
+                        state = 'ALIGN_AND_PICTURE';
+                        continue; % <--- VIGTIGT: Springer publishen i bunden over!
+                    end
+                    
+                case 'ALIGN_AND_PICTURE'
+                    active_dist = []; active_center_x = [];
+                    
+                    % Vælg den rigtige cirkel baseret på hvad vi fandt
+                    if strcmp(target_color_focus, 'Orange') && ~isempty(centersO)
+                        active_dist = f * H / (2 * radiiO(1));
+                        active_center_x = centersO(1, 1);
+                    elseif strcmp(target_color_focus, 'Blue') && ~isempty(centersB)
+                        active_dist = f * H / (2 * radiiB(1));
+                        active_center_x = centersB(1, 1);
+                    end
+                    
+                    if ~isempty(active_dist)
+                        frames_lost = 0; % Vi kan se den! Nulstil tæller
+                        
+                        err_dist = active_dist - target_distance; 
+                        err_angle = (img_width / 2) - active_center_x; 
+                        
+                        v_cmd = Kp_dist * err_dist;
+                        w_cmd = Kp_angle * err_angle;
+
+                        if abs(err_angle) > 50
+                            v_cmd = v_cmd * 0.2; 
+                        end
+                        
+                        % Begræns hastigheden
+                        v_cmd = max(min(v_cmd, 0.10), -0.10); 
+                        w_cmd = max(min(w_cmd, 0.25), -0.25); 
+                        
+                        % HUSK HASTIGHEDEN til hvis vi mister cirklen af syne!
+                        last_v_cmd = v_cmd;
+                        last_w_cmd = w_cmd;
+                        
+                        % Tjek om vi er i position (8 cm og 15 pixels tolerance)
+                        if abs(err_dist) < 0.08 && abs(err_angle) < 15
+                            fprintf('I position! Tager billede...\n');
+                            
+                            vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
+                            
+                            timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+                            img_filename = sprintf('TEST_%s_Circle_%s.png', target_color_focus, timestamp);
+                            imwrite(image_rgb, img_filename);
+                            fprintf('Billede gemt som: %s\n', img_filename);
+                            
+                            mission_complete = true; 
+                        end
+                    else
+                        % VI MISTEDE CIRKLEN! 
+                        frames_lost = frames_lost + 1;
+                        
+                        % Brug den forrige hastighed, men skru ned for tempoet (gør den roligere i blinde)
+                        v_cmd = last_v_cmd * 0.5; 
+                        w_cmd = last_w_cmd * 0.5; 
+                        
+                        if frames_lost > 50 
+                            fprintf('Mistede cirklen totalt. Vender tilbage til at lede...\n');
+                            state = 'SEARCH_SPIN';
+                            frames_lost = 0;
+                        end
+                    end
+            end
+        end
+        
+        % Send hastighed
+        vel_msg.linear.x = v_cmd;      
+        vel_msg.angular.z = w_cmd;     
+        send(vel_pub, vel_msg);
+        
+        pause(0.1); % Kør med ca. 10 Hz
+    end
+    
+catch ME
+    % Sikkerheds-stop hvis koden crasher
+    vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
+    rethrow(ME);
+end
+
+% Ryd op
+vel_msg.linear.x = 0; vel_msg.angular.z = 0; send(vel_pub, vel_msg);
+clear vel_pub image_sub node;
+fprintf('Test færdig!\n');
+
+%% CALLBACKS OG FUNKTIONER
+function imageCallback(msg)
+    global g_image g_image_received
+    g_image = rosReadImage(msg); 
+    g_image_received = true;
+end
+
+function [centersO, radiiO, centersB, radiiB] = detectCircles(rgb)
+    hsv = rgb2hsv(imgaussfilt(rgb, 1));
+    
+    maskO = (hsv(:,:,1) >= 0.05 & hsv(:,:,1) <= 0.15) & hsv(:,:,2) >= 0.5 & hsv(:,:,3) >= 0.2;
+    maskB = (hsv(:,:,1) >= 0.55 & hsv(:,:,1) <= 0.65) & hsv(:,:,2) >= 0.5 & hsv(:,:,3) >= 0.2;
+    
+    se = strel('disk', 5);
+    
+    % Ryd op i maskerne med morfologi
+    cleanO = imclose(imopen(maskO, se), se);
+    cleanB = imclose(imopen(maskB, se), se);
+    
+    % --- ANTI-VÆG FILTER ---
+    % Vi beholder denne! Fjerner alt, der er alt for stort (f.eks. en blå dør eller væg)
+    cleanO = bwareafilt(cleanO, [400 100000]);
+    cleanB = bwareafilt(cleanB, [400 100000]);
+    
+    % --- FJERNET SENSITIVITY ---
+    % Vi fjerner 'Sensitivity', 0.80, så den går tilbage til standard (0.85).
+    % Nu kan den igen spotte cirklerne, selvom robotten bevæger sig og skaber lidt blur.
+    [centersO, radiiO] = imfindcircles(cleanO, [20 200], 'ObjectPolarity', 'bright');
+    [centersB, radiiB] = imfindcircles(cleanB, [20 200], 'ObjectPolarity', 'bright');
+end
