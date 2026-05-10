@@ -8,7 +8,7 @@ close all;
 
 %% 1. Select and Load the Map
 disp('[PROCESS] Opening file browser to select a map...');
-[inFile, inPath] = uigetfile('manual_custom_map.mat', 'Select the map file to edit (e.g., manual_custom_map.mat)');
+[inFile, inPath] = uigetfile('edited_custom_map.mat', 'Select the map file to edit (e.g., manual_custom_map.mat)');
 if isequal(inFile, 0)
     disp('User canceled file selection. Exiting.');
     return;

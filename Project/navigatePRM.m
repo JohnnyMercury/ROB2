@@ -113,11 +113,11 @@ end
 function cfg = applyDefaults(cfg)
 def.mapPrefix = 'slam_map_';
 def.randomSeed = 1;
-def.numNodes = 350;
+def.numNodes = 1000;
 def.connectionDistance = 0.35;
 def.retryNumNodes = 700;
-def.retryConnectionDistance = 0.5;
-def.inflateRadius = 0.20;
+def.retryConnectionDistance = 2.5;
+def.inflateRadius = 0.30;
 def.occupancyThreshold = 0.62;
 def.simplifyPath = true;
 def.simplifyEps = 0.015;

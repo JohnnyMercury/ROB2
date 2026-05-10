@@ -7,10 +7,10 @@ clc;
 % plans PRM path, then tracks waypoints using PID + Obstacle Avoidance.
 
 %% User Mission Parameters
-map_input_file = 'edited_custom_map.mat';  
-map_start_pose = [0,0, 0.0]; % [x y yaw] in map frame at script start
-goal_B = [20.291, 9.006];  % Goal in Area B 
-goal_C = [17.484, 17.426];  % Goal in Area C 
+map_input_file = 'edited_custom_map2.mat';  
+map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
+goal_B = [20.405, 8.891];  % Goal in Area B 
+goal_C = [17.827, 16.739];  % Goal in Area C 
 
 % Navigation
 waypoint_tolerance = 0.12;        
@@ -27,7 +27,7 @@ viz_update_stride = 3;
 % PRM planner overrides
 prm_cfg = struct();
 prm_cfg.numNodes = 1000;
-prm_cfg.connectionDistance = 2.00;
+prm_cfg.connectionDistance = 2.50;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
 prm_cfg.inflateRadius = 0.30;
@@ -43,7 +43,7 @@ Kp_angle = 0.002;
 found_orange = false; 
 found_blue = false;  
 target_color_focus =''; 
-search_waypoints = [20.348, 10.381; 20.348, 11.870; 20.520, 13.474; 20.348, 15.421; 20.405, 17.655]; % Area B 
+search_waypoints = [20.291, 9.636; 20.405, 10.667; 20.405, 12.042; 20.405, 13.016; 20.405, 14.276; 20.348, 15.479; 20.348, 16.510; 20.348, 17.369; 20.348, 17.369;]; % Area B 
 current_search_idx = 1;
 spin_progress = 0;
 frames_lost = 0; 
@@ -267,7 +267,7 @@ try
                 end
                 
             case 'SEARCH_SPIN'
-                v_cmd = 0.0; w_cmd = 0.2; % Slow rotation
+                v_cmd = 0.0; w_cmd = 0.3; % Slow rotation
                 
                 if g_image_received && ~isempty(g_image)
                     image_rgb = imrotate(g_image, 180);
@@ -376,7 +376,7 @@ try
                         v_cmd = last_v_cmd * 0.5; 
                         w_cmd = last_w_cmd * 0.5;
             
-            if frames_lost > 50 
+            if frames_lost > 30 
                 fprintf('[STATE] Target lost for too long. Returning to SEARCH_SPIN.\n');
                 state = 'SEARCH_SPIN';
                 frames_lost = 0;
@@ -524,8 +524,8 @@ function [centersO, radiiO, centersB, radiiB] = detectCircles(rgb)
     % --- Filter for walls ---
     cleanO = bwareafilt(cleanO, [400 100000]);
     cleanB = bwareafilt(cleanB, [400 100000]);
-    [centersO, radiiO] = imfindcircles(cleanO, [20 200], 'ObjectPolarity', 'bright');
-    [centersB, radiiB] = imfindcircles(cleanB, [20 200], 'ObjectPolarity', 'bright');
+    [centersO, radiiO] = imfindcircles(cleanO, [20 200], 'ObjectPolarity', 'bright','Sensitivity',0.80);
+    [centersB, radiiB] = imfindcircles(cleanB, [20 200], 'ObjectPolarity', 'bright', 'Sensitivity',0.80);
 end
 
 function angles = quat2euler(q)
