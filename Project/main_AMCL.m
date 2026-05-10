@@ -319,8 +319,8 @@ try
                         v_cmd = Kp_dist * err_dist;
                         w_cmd = Kp_angle * err_angle;
                         
-                        v_cmd = max(min(v_cmd, 0.15), -0.15); 
-                        w_cmd = max(min(w_cmd, 0.5), -0.5); 
+                        v_cmd = max(min(v_cmd, 0.15), -0.15);
+                        w_cmd = max(min(w_cmd, 0.5), -0.5);
                         
                         if abs(err_dist) < 0.05 && abs(err_angle) < 20
                             fprintf('[STATE] In position. Taking picture...\n');
