@@ -9,8 +9,8 @@ clc;
 %% User Mission Parameters
 map_input_file = 'edited_custom_map.mat';  
 map_start_pose = [0,0, 0.0]; % [x y yaw] in map frame at script start
-goal_B = [20.291, 9.006];  % Goal in Area B 
-goal_C = [17.484, 17.426];  % Goal in Area C 
+goal_B = [20.35, 9.24];  % Goal in Area B 
+goal_C = [17.31, 17.26];  % Goal in Area C 
 
 % Navigation
 waypoint_tolerance = 0.12;        
@@ -30,7 +30,7 @@ prm_cfg.numNodes = 1000;
 prm_cfg.connectionDistance = 2.00;
 prm_cfg.retryNumNodes = 700;
 prm_cfg.retryConnectionDistance = 0.75;
-prm_cfg.inflateRadius = 0.30;
+prm_cfg.inflateRadius = 0.20;
 prm_cfg.simplifyEps = 0.40; 
 
 % Vision 
@@ -43,7 +43,7 @@ Kp_angle = 0.002;
 found_orange = false; 
 found_blue = false;  
 target_color_focus =''; 
-search_waypoints = [20.348, 10.381; 20.348, 11.870; 20.520, 13.474; 20.348, 15.421; 20.405, 17.655]; % Area B 
+search_waypoints = [20.348, 10.381; 20.348, 11.870; 20.520, 13.474; 20.348, 15.421;]; % Area B 
 current_search_idx = 1;
 spin_progress = 0;
 frames_lost = 0; 
@@ -443,7 +443,7 @@ try
             end
 
             if (strcmp(state, 'SEARCH_DRIVE') || strcmp(state, 'SEARCH_SPIN') || strcmp(state, 'ALIGN_AND_PICTURE')) && g_image_received && ~isempty(g_image)
-                figure(3);
+                figure(2); % Vi tvinger den over i Figure 2, så den ikke overskriver robot-kortet i Figure 1!
                 image_rgb_viz = imrotate(g_image, 180);
                 [cO, rO, cB, rB] = detectCircles(image_rgb_viz);
                 
