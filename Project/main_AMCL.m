@@ -7,7 +7,7 @@ clc;
 % plans PRM path, then tracks waypoints using PID + Obstacle Avoidance.
 
 %% User Mission Parameters
-map_input_file = 'edited_custom_map3.mat';  
+map_input_file = 'edited_custom_map4.mat';  
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
 goal_B = [20.405, 8.891];  % Goal in Area B 
 goal_C = [17.827, 16.739];  % Goal in Area C 
@@ -43,7 +43,29 @@ Kp_angle = 0.002;
 found_orange = false; 
 found_blue = false;  
 target_color_focus =''; 
-search_waypoints = [20.119, 9.693; 20.061, 10.896; 20.061, 12.042; 20.176, 13.245; 20.119, 14.906; 20.004, 16.911; 20.004, 18.343;]; % Area B 
+%search_waypoints = [20.119, 9.693; 20.061, 10.896; 20.061, 12.042; 20.176, 13.245; 20.119, 14.906; 20.004, 16.911; 20.004, 18.343;]; % Area B 
+search_waypoints = [
+    20.344, 8.137;
+    20.773, 8.757;
+    20.058, 9.329;
+    20.630, 9.758;
+    19.915, 10.330;
+    20.582, 11.046;
+    19.963, 11.332;
+    20.964, 12.190;
+    20.106, 12.762;
+    21.012, 13.191;
+    19.915, 13.764;
+    20.630, 14.336;
+    20.010, 15.003;
+    20.773, 15.385;
+    19.963, 16.005;
+    20.821, 16.482;
+    19.963, 16.815;
+    20.582, 17.531;
+    20.010, 18.007;
+    20.582, 18.437;
+];
 current_search_idx = 1;
 spin_progress = 0;
 frames_lost = 0; 
@@ -127,7 +149,7 @@ amcl.MotionModel = mm;
 amcl.GlobalLocalization = false;
 amcl.InitialPose = map_start_pose;
 amcl.InitialCovariance = diag([0.20, 0.20, 0.10]); % INCREASED: Gives the particles more room to explore and fix bad odometry
-amcl.UpdateThresholds = [0.10, 0.10, 0.10]; % INCREASED: Prevents rapid particle collapse (Particle Deprivation)
+amcl.UpdateThresholds = [0.05, 0.05, 0.05]; % INCREASED: Prevents rapid particle collapse (Particle Deprivation)
 amcl.ResamplingInterval = 2; % INCREASED: Resample less often to keep the particle cloud diverse
 
 % Tracking variables
