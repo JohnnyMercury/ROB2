@@ -7,7 +7,7 @@ clc;
 % plans PRM path, then tracks waypoints using PID + Obstacle Avoidance.
 
 %% User Mission Parameters
-map_input_file = 'edited_custom_map3.mat';  
+map_input_file = 'edited_custom_map4.mat';  
 map_start_pose = [0, 0, 0.0]; % [x y yaw] in map frame at script start
 goal_B = [20.405, 8.891];  % Goal in Area B 
 goal_C = [17.827, 16.739];  % Goal in Area C 
