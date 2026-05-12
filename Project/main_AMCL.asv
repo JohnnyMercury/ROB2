@@ -20,7 +20,7 @@ update_rate_hz = 10;
 dt = 1 / update_rate_hz;
 
 % Teleportation Limits
-max_amcl_jump = 0.3;         % Max allowed distance (m) AMCL can shift the robot during normal driving
+max_amcl_jump = 0.4;         % Max allowed distance (m) AMCL can shift the robot during normal driving
 max_amcl_jump_warmup = 1.5;  % Allow larger snaps during the initial 5-second warmup
 
 % Visualization 
