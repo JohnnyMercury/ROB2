@@ -130,7 +130,7 @@ amcl.MotionModel = mm;
 % Configure Particle Filter
 amcl.GlobalLocalization = false;
 amcl.InitialPose = map_start_pose;
-amcl.InitialCovariance = diag([0.20, 0.20, 0.10]); % INCREASED: Gives the particles more room to explore and fix bad odometry
+amcl.InitialCovariance = diag([0.15, 0.15, 0.10]); % INCREASED: Gives the particles more room to explore and fix bad odometry
 amcl.UpdateThresholds = [0.00, 0.00, 0.00]; % INCREASED: Prevents rapid particle collapse (Particle Deprivation)
 amcl.ResamplingInterval = 2; % INCREASED: Resample less often to keep the particle cloud diverse
 
